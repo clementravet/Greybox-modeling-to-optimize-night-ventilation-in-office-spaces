@@ -1,0 +1,19 @@
+version: 2.1
+
+jobs:
+  build_test:
+    docker:
+      - image: circleci/python:3.8.7
+    steps:
+      - checkout  # checkout source code to working directory
+      - run:
+          command: |  # install dependencies
+            pip install -e .'[dev,test]'
+      - run:
+          command: |  # Run test suite
+            flake8 && pytest
+
+workflows:
+  build_test_publish:
+    jobs:
+      - build_test
