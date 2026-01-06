@@ -509,3 +509,101 @@ class Ti(DarkGreyModel):
             Ti[i] = Ti[i-1] + dTi
 
         return DarkGreyModelResult(Ti, X, params, {'Ti': Ti})
+    
+
+class TiTm2R1C(DarkGreyModel):
+    '''
+    A DarkGrey Model representing a 2R-1C Ti–Tm RC-equivalent circuit
+
+    States
+    ------
+    Ti : Indoor air temperature
+    Tm : Thermal mass (internal mass) temperature
+
+    Inputs (X)
+    ----------
+    Ta      : Ambient/outdoor air temperature
+    Q_heat  : Internal heat gains (people + equipment etc.)
+    Q_vent  : Ventilation heat flow (can be negative when losing heat)
+    Q_solar : Effective solar gains to the zone
+
+    Parameters (params)
+    -------------------
+    Ti0 : Initial indoor air temperature
+    Tm0 : Initial thermal mass temperature
+    Ci  : Thermal capacitance of indoor air + light mass
+    Cm  : Thermal capacitance of internal mass
+    Rint: Thermal resistance between indoor air and internal mass
+    Rout: Thermal resistance between indoor air and ambient
+    '''
+
+    def model(self, params, X):
+        '''
+        System of differential equations for the Ti–Tm 2R-1C model.
+
+        Parameters
+        ----------
+        params : `lmfit.Parameters`
+            - 'Ti0' : Indoor temperature at t(0)
+            - 'Tm0' : Thermal mass temperature at t(0)
+            - 'Ci'  : Indoor air capacitance
+            - 'Cm'  : Thermal mass capacitance
+            - 'Rint': Resistance between Ti and Tm
+            - 'Rout': Resistance between Ti and Ta
+
+        X : dict of np.array
+            - 'Ta'     : Ambient temperature time series
+            - 'Q_heat' : Internal heat gains time series
+            - 'Q_vent' : Ventilation heat flow time series
+            - 'Q_solar': Solar gains time series
+
+        Returns
+        -------
+        DarkGreyModelResult
+            Contains fitted Ti plus full state trajectories.
+        '''
+
+        num_rec = len(X['Ta'])
+
+        # Allocate state arrays
+        Ti = np.zeros(num_rec)
+        Tm = np.zeros(num_rec)
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+
+        # Parameters
+        Ci   = params['Ci'].value
+        Cm   = params['Cm'].value
+        Rint = params['Rint'].value
+        Rout = params['Rout'].value
+
+        # Inputs
+        Ta     = X['Ta']
+        Q_heat = X['Q_heat']
+        Q_vent = X['Q_vent']
+        Q_solar= X['Q_solar']
+
+        # Time stepping (explicit Euler, as in your example)
+        for i in range(1, num_rec):
+
+            # dTi/dt = (Tm - Ti)/(Rint*Ci) + (Ta - Ti)/(Rout*Ci)
+            #          + (Q_heat + Q_vent + Q_solar)/Ci
+            dTi = (
+                (Tm[i-1] - Ti[i-1]) / (Rint * Ci)
+                + (Ta[i-1] - Ti[i-1]) / (Rout * Ci)
+                + (Q_heat[i-1] + Q_vent[i-1] + Q_solar[i-1]) / Ci
+            ) * self.rec_duration
+
+            # dTm/dt = (Ti - Tm)/(Rint*Cm)
+            dTm = (
+                (Ti[i-1] - Tm[i-1]) / (Rint * Cm)
+            ) * self.rec_duration
+
+            Ti[i] = Ti[i-1] + dTi
+            Tm[i] = Tm[i-1] + dTm
+
+        # Return result with Ti as main output (like TiTeThRia)
+        return DarkGreyModelResult(Ti, X, params, {'Ti': Ti, 'Tm': Tm})
+
