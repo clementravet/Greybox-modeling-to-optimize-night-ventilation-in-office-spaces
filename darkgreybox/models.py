@@ -677,10 +677,9 @@ class TiTmxvCN2R2C(DarkGreyModel):
         Rout = params['Rout'].value
         alpha = params['alpha'].value
         tau_v = params['tau_v'].value
-
         q_pers      = params['q_pers'].value
         q_equip_var = params['q_equip_var'].value
-        V_room      = params['V'].value
+        V      = params['V'].value
         E           = params['E'].value
 
         # Inputs
