@@ -630,10 +630,8 @@ class TiTmxvCN2R2C(DarkGreyModel):
     Tfor      : Supply water temperature to circuit (°C)
     Q_vent    : Ventilation heat flow (W)
     Q_solar   : Solar gains (W)
-    Q_int_const : Constant internal gains (lights etc., W)
     MVV       : Heating command (%) for this radiator
     ACH       : Air changes per hour (1/h) or equivalent ventilation rate
-    C_out     : Outdoor CO2 concentration (ppm)
 
     Parameters (params)
     -------------------
@@ -648,6 +646,8 @@ class TiTmxvCN2R2C(DarkGreyModel):
     q_equip_var : Variable equipment gain per person (W/person)
     V           : Room volume (m3)
     E           : CO2 emission per person (ppm·m3/s/person or consistent units)
+    C_out       : Outdoor CO2 concentration (ppm)
+    Q_int_const : Constant internal gains (lights etc., W)
     """
 
     def model(self, params, X):
