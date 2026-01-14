@@ -729,8 +729,8 @@ class TiTmxvCN2R2C(DarkGreyModel):
             ach_s = ACH[k-1] / 3600.0
 
             dC = (
-                -ach_s * (C[k-1] - C_out[k-1])
-                + (E / V_room) * N[k-1]
+                -ach_s * (C[k-1] - C_out)
+                + (E / V) * N[k-1]
             ) * dt
 
             # Simple random-walk for N (no deterministic drift);
