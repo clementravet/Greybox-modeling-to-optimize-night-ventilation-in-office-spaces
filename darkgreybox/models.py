@@ -607,3 +607,137 @@ class TiTm2R1C(DarkGreyModel):
         # Return result with Ti as main output (like TiTeThRia)
         return DarkGreyModelResult(Ti, X, params, {'Ti': Ti, 'Tm': Tm})
 
+
+class TiTmxvCN2R2C(DarkGreyModel):
+    """
+    Grey-box model of one room with:
+      - 2R2C thermal model (Ti, Th)
+      - Water radiator driven by MVV and supply temperature
+      - Ventilation, solar and internal gains
+      - CO2-based grey-box occupancy sub-model
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Th  : Lumped thermal mass temperature (°C)
+    x_v : Effective valve / flow opening (0–1)
+    C   : Indoor CO2 concentration (ppm)
+    N   : Effective occupancy (persons)
+
+    Inputs X
+    --------
+    Ta        : Ambient temperature (°C)
+    Tfor      : Supply water temperature to circuit (°C)
+    Q_vent    : Ventilation heat flow (W)
+    Q_solar   : Solar gains (W)
+    Q_int_const : Constant internal gains (lights etc., W)
+    MVV       : Heating command (%) for this radiator
+    ACH       : Air changes per hour (1/h) or equivalent ventilation rate
+    C_out     : Outdoor CO2 concentration (ppm)
+
+    Parameters (params)
+    -------------------
+    Ti0, Th0, xv0, C0, N0 : Initial states
+    Ci   : Air + light mass heat capacity (J/K)
+    Ch   : Lumped mass heat capacity (J/K)
+    Rint : Resistance between Ti and Th (K/W)
+    Rout : Resistance between Ti and Ta (K/W)
+    alpha: Radiator gain (W/K)
+    tau_v: Valve time constant (s)
+    q_pers      : Sensible heat per person (W/person)
+    q_equip_var : Variable equipment gain per person (W/person)
+    V           : Room volume (m3)
+    E           : CO2 emission per person (ppm·m3/s/person or consistent units)
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states
+        Ti  = np.zeros(num_rec)
+        Th  = np.zeros(num_rec)
+        xv  = np.zeros(num_rec)
+        C   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Th[0] = params['Th0']
+        xv[0] = params['xv0']
+        C[0]  = params['C0']
+        N[0]  = params['N0']
+
+        # Parameters
+        Ci   = params['Ci'].value
+        Ch   = params['Ch'].value
+        Rint = params['Rint'].value
+        Rout = params['Rout'].value
+        alpha = params['alpha'].value
+        tau_v = params['tau_v'].value
+
+        q_pers      = params['q_pers'].value
+        q_equip_var = params['q_equip_var'].value
+        V_room      = params['V'].value
+        E           = params['E'].value
+
+        # Inputs
+        Ta        = X['Ta']
+        Tfor      = X['Tfor']
+        Q_vent    = X['Q_vent']
+        Q_solar   = X['Q_solar']
+        Q_int_const = X['Q_int_const']  # already W (q_equip_const * A_room)
+        MVV       = X['MVV']           # in %
+        ACH       = X['ACH']           # 1/h
+        C_out     = X['C_out']
+
+        dt = self.rec_duration  # [s]
+
+        for k in range(1, num_rec):
+
+            # 1) Valve / flow state: dxv/dt = (f(MVV) - xv)/tau_v
+            f_MVV = MVV[k-1] / 100.0
+            dxv = (f_MVV - xv[k-1]) / tau_v * dt
+            xv[k] = xv[k-1] + dxv
+
+            # 2) Radiator heat: Q_heat = alpha * xv * (Tfor - Th)
+            Q_heat = alpha * xv[k-1] * (Tfor[k-1] - Th[k-1])
+
+            # 3) Occupancy-based internal gains:
+            Q_int_occ = (q_pers + q_equip_var) * N[k-1]
+            Q_int = Q_int_occ + Q_int_const[k-1]
+
+            # 4) Thermal states
+            dTi = (
+                (Th[k-1] - Ti[k-1]) / (Rint * Ci)
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+                + (Q_vent[k-1] + Q_solar[k-1] + Q_int) / Ci
+            ) * dt
+
+            dTh = (
+                (Ti[k-1] - Th[k-1]) / (Rint * Ch)
+                + Q_heat / Ch
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Th[k] = Th[k-1] + dTh
+
+            # 5) CO2–occupancy sub-model
+            # Convert ACH [1/h] to s^-1
+            ach_s = ACH[k-1] / 3600.0
+
+            dC = (
+                -ach_s * (C[k-1] - C_out[k-1])
+                + (E / V_room) * N[k-1]
+            ) * dt
+
+            # Simple random-walk for N (no deterministic drift);
+            # process noise handled in estimation, so deterministic part is zero.
+            dN = 0.0
+
+            C[k] = C[k-1] + dC
+            N[k] = N[k-1] + dN
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Th': Th, 'xv': xv, 'C': C, 'N': N}
+        )
