@@ -668,6 +668,9 @@ class TiTmxvCN2R2C(DarkGreyModel):
         N[0]  = params['N0']
 
         # Parameters
+        S = 20      # m²
+        V = 2.5*S   # m³
+        E = 0.016   # m³/h
         Ci   = params['Ci'].value
         Ch   = params['Ch'].value
         Rint = params['Rint'].value
