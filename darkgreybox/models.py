@@ -690,7 +690,6 @@ class TiTmxvCN2R2C(DarkGreyModel):
         Q_int_const = X['Q_int_const']  # already W (q_equip_const * A_room)
         MVV       = X['MVV']           # in %
         ACH       = X['ACH']           # 1/h
-        C_out     = X['C_out']
 
         dt = self.rec_duration  # [s]
 
