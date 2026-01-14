@@ -668,27 +668,25 @@ class TiTmxvCN2R2C(DarkGreyModel):
         N[0]  = params['N0']
 
         # Parameters
-        S = 20      # m²
-        V = 2.5*S   # m³
-        E = 0.016   # m³/h
         Ci   = params['Ci'].value
         Ch   = params['Ch'].value
         Rint = params['Rint'].value
         Rout = params['Rout'].value
         alpha = params['alpha'].value
         tau_v = params['tau_v'].value
-        q_pers      = params['q_pers'].value
+        q_pers = params['q_pers'].value
         q_equip_var = params['q_equip_var'].value
-        V      = params['V'].value
-        E           = params['E'].value
+        V = params['V'].value
+        E = params['E'].value
         C_out = params['C_out'].value
+        Q_int_const = params['Q_int_const'].value
 
         # Inputs
         Ta        = X['Ta']
         Tfor      = X['Tfor']
         Q_vent    = X['Q_vent']
         Q_solar   = X['Q_solar']
-        Q_int_const = X['Q_int_const']  # already W (q_equip_const * A_room)
+        #Q_int_const = X['Q_int_const']  # already W (q_equip_const * A_room)
         MVV       = X['MVV']           # in %
         ACH       = X['ACH']           # 1/h
         #C_out     = X['C_out']
@@ -707,7 +705,7 @@ class TiTmxvCN2R2C(DarkGreyModel):
 
             # 3) Occupancy-based internal gains:
             Q_int_occ = (q_pers + q_equip_var) * N[k-1]
-            Q_int = Q_int_occ + Q_int_const[k-1]
+            Q_int = Q_int_occ + Q_int_const
 
             # 4) Thermal states
             dTi = (
