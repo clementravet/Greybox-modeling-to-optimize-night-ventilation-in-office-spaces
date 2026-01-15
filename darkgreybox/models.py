@@ -742,3 +742,170 @@ class TiTmxvCN2R2C(DarkGreyModel):
             Ti, X, params,
             {'Ti': Ti, 'Th': Th, 'xv': xv, 'C': C, 'N': N}
         )
+
+
+class TiTmxvCN2R2C_KF(DarkGreyModel):
+    """
+    Grey-box model with Kalman Filter for occupancy estimation.
+    
+    Same as TiTmxvCN2R2C but with a simple Kalman filter that updates
+    the occupancy N based on CO2 observations at each timestep.
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Th  : Lumped thermal mass temperature (°C)
+    x_v : Effective valve / flow opening (0–1)
+    C   : Indoor CO2 concentration (ppm) - predicted
+    N   : Effective occupancy (persons) - updated via Kalman filter
+
+    Additional Inputs X
+    -------------------
+    C_obs : Observed CO2 concentration for Kalman filter update (ppm)
+
+    Additional Parameters
+    ---------------------
+    Q_N   : Process noise variance for N (persons²)
+    R_C   : Measurement noise variance for CO2 (ppm²)
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states
+        Ti  = np.zeros(num_rec)
+        Th  = np.zeros(num_rec)
+        xv  = np.zeros(num_rec)
+        C   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+        P_N = np.zeros(num_rec)  # Variance of N estimate
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Th[0] = params['Th0']
+        xv[0] = params['xv0']
+        C[0]  = params['C0']
+        N[0]  = params['N0']
+        P_N[0] = params['P_N0'].value if 'P_N0' in params else 1.0  # Initial variance
+
+        # Parameters
+        Ci   = params['Ci'].value
+        Ch   = params['Ch'].value
+        Rint = params['Rint'].value
+        Rout = params['Rout'].value
+        alpha = params['alpha'].value
+        tau_v = params['tau_v'].value
+        q_pers = params['q_pers'].value
+        q_equip_var = params['q_equip_var'].value
+        V = params['V'].value
+        E = params['E'].value
+        C_out = params['C_out'].value
+        Q_int_const = params['Q_int_const'].value
+        
+        # Kalman filter noise parameters
+        Q_N = params['Q_N'].value if 'Q_N' in params else 0.1   # Process noise for N
+        R_C = params['R_C'].value if 'R_C' in params else 100.0  # Measurement noise for CO2
+
+        # Inputs
+        Ta        = X['Ta']
+        Tfor      = X['Tfor']
+        Q_vent    = X['Q_vent']
+        Q_solar   = X['Q_solar']
+        MVV       = X['MVV']
+        ACH       = X['ACH']
+        
+        # CO2 observations for Kalman filter (use actual measured CO2)
+        C_obs = X['C_obs'] if 'C_obs' in X else X.get('C0', C)
+
+        dt = self.rec_duration
+
+        for k in range(1, num_rec):
+            # 1) Valve / flow state
+            f_MVV = MVV[k-1] / 100.0
+            dxv = (f_MVV - xv[k-1]) / tau_v * dt
+            xv[k] = xv[k-1] + dxv
+
+            # 2) Radiator heat
+            Q_heat = alpha * xv[k-1] * (Tfor[k-1] - Th[k-1])
+
+            # 3) Occupancy-based internal gains (use current N estimate)
+            Q_int_occ = (q_pers + q_equip_var) * N[k-1]
+            Q_int = Q_int_occ + Q_int_const
+
+            # 4) Thermal states
+            dTi = (
+                (Th[k-1] - Ti[k-1]) / (Rint * Ci)
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+                + (Q_vent[k-1] + Q_solar[k-1] + Q_int) / Ci
+            ) * dt
+
+            dTh = (
+                (Ti[k-1] - Th[k-1]) / (Rint * Ch)
+                + Q_heat / Ch
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Th[k] = Th[k-1] + dTh
+
+            # 5) CO2–occupancy sub-model with Kalman Filter
+            # We OBSERVE C (CO2), we want to ESTIMATE N (occupancy)
+            
+            # Get observed CO2 values
+            C_obs_prev = C_obs[k-1] if hasattr(C_obs, '__getitem__') else C_obs
+            C_obs_curr = C_obs[k] if hasattr(C_obs, '__getitem__') else C_obs
+            
+            # ACH is in 1/h, dt is in hours
+            ach_h = ACH[k-1]  # Air changes per hour (1/h)
+            
+            # === KALMAN FILTER FOR N ===
+            # The CO2 mass balance is: V * dC/dt = -Q*(C - C_out) + E_ppm*N
+            # where:
+            #   - C is in ppm (parts per million)
+            #   - E is in m³ CO2/h/person (volume of pure CO2 emitted)
+            #   - To convert E to ppm-equivalent: E_ppm = E * 10^6 ppm
+            #   - Q = ACH * V (m³/h)
+            #
+            # Dividing by V: dC/dt = -ACH*(C - C_out) + (E*10^6/V)*N
+            # Rearranging: N = (dC/dt + ACH*(C - C_out)) * V / (E * 10^6)
+            
+            # Step 1: PREDICT N (random walk model)
+            N_pred = N[k-1]
+            P_pred = P_N[k-1] + Q_N * dt  # Variance grows with process noise
+            
+            # Step 2: Compute "measured" N from observed CO2
+            dC_obs = (C_obs_curr - C_obs_prev) / dt if dt > 0 else 0.0  # ppm/h
+            ventilation_term = ach_h * (C_obs_prev - C_out)  # ppm/h
+            
+            # Convert E from m³/h to ppm-equivalent (E * 10^6)
+            E_ppm = E * 1e6  # ppm·m³/h/person
+            
+            # N_meas = (ppm/h) * m³ / (ppm·m³/h/person) = persons
+            N_meas = (dC_obs + ventilation_term) * V / E_ppm if E_ppm > 0 else 0.0
+            
+            # Step 3: MEASUREMENT UPDATE
+            H = 1.0
+            
+            # Innovation (difference between measured and predicted N)
+            y_innov = N_meas - N_pred
+            
+            # Innovation covariance: S = H*P_pred*H + R
+            # R_C is measurement noise variance for N
+            S = P_pred + R_C
+            
+            # Kalman gain
+            K = P_pred / S if S > 1e-10 else 0.0
+            
+            # Update N estimate
+            N[k] = N_pred + K * y_innov
+            N[k] = max(0, N[k])  # N cannot be negative
+            
+            # Update variance
+            P_N[k] = (1 - K) * P_pred
+            
+            # Store modeled CO2 (using observed values, since we observe C)
+            C[k] = C_obs_curr
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Th': Th, 'xv': xv, 'C': C, 'N': N, 'P_N': P_N}
+        )
