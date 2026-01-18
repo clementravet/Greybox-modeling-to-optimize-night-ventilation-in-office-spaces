@@ -909,3 +909,182 @@ class TiTmxvCN2R2C_KF(DarkGreyModel):
             Ti, X, params,
             {'Ti': Ti, 'Th': Th, 'xv': xv, 'C': C, 'N': N, 'P_N': P_N}
         )
+
+
+class TiThTmTrcn3R3C(DarkGreyModel):
+    """
+    Grey-box model of one room with:
+      - 3R3C thermal model (Ti, Th, Tm)
+      - Detailed water radiator (Tr driven by MVV and Tsup)
+      - Ventilation via q_v (m3/h), solar and internal gains
+      - CO2-based grey-box occupancy sub-model (c in fraction)
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Th  : Radiator/mean water temperature (°C)
+    Tm  : Lumped thermal mass temperature (°C)
+    Tr  : Return water temperature (°C)
+    c   : Indoor CO2 concentration (volume fraction)
+    N   : Effective occupancy (persons)
+    Phi : Radiator flow
+
+    Inputs X
+    --------
+    Ta      : Ambient temperature (°C)
+    Tfor    : Supply water temperature to circuit (°C)
+    Tsup    : Supply air temperature for ventilation (°C)
+    qv      : Ventilation flow rate (m3/h)
+    MVV     : Heating command (%) for this radiator
+    Ik      : Irradiance
+    c       : CO2 concentration (ppm)
+
+    Parameters (params)
+    ------------------
+    Ti0, Th0, Tm0, Tr0, xv0, c0, N0 : Initial states
+    Ci  : Air + light capacitance (J/K)
+    Ch  : Radiator capacitance (J/K)
+    Cm  : Thermal mass capacitance (J/K)
+    Cf  : Radiator flow capacitance (J/K)
+    Rim : Resistance Ti-Tm (K/W)
+    Rout: Resistance Ti-Ta (K/W)
+    Rih : Resistance Ti-Th (K/W)
+    Rfr : Resistance Th-Tr (K/W)
+    rho_air, cp_air: Air density (kg/m3), specific heat of air (J/kgK)
+    Phi_max, cp_w : Max water flow (kg/s), water cp (J/kgK)
+    V     : Room volume (m³)
+    S     : Room surface (m²)
+    A     : Window area (m²)
+    G     : CO2 emission/person (m³/h/person)
+    c_out : Outdoor CO2 fraction
+    q_pers, q_equip_var : Gains/person (W/person)
+    q_equip_const : Constant gains (W/m²)
+    g : total solar energy transmittance of the glazing 
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states
+        Ti  = np.zeros(num_rec)
+        Th  = np.zeros(num_rec)
+        Tm  = np.zeros(num_rec)
+        Tr  = np.zeros(num_rec)
+        c   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+        Phi = np.zeros(num_rec)
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Th[0] = params['Th0']
+        Tm[0] = params['Tm0']
+        Tr[0] = params['Tr0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+        Phi[0]  = params['Phi0']
+
+        # Parameters
+        Ci   = params['Ci'].value
+        Ch   = params['Ch'].value
+        Cm   = params['Cm'].value
+        Cf   = params['Cf'].value
+        Rih = params['Rih'].value
+        Rim = params['Rim'].value
+        Rfr = params['Rfr'].value
+        Rout = params['Rout'].value
+        q_pers = params['q_pers'].value
+        q_equip_var = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V = params['V'].value
+        S = params['S'].value
+        A = params['A'].value
+        G = params['G'].value
+        c_out = params['c_out'].value
+        rho_air = params['rho_air'].value
+        cp_air = params['cp_air'].value
+        Phi_max = params['Phi_max'].value
+        cp_w = params['cp_w'].value
+        g = params['g'].value
+    
+        # Inputs
+        Ta        = X['Ta']
+        Tfor      = X['Tfor']
+        Tsup      = X['Tsup']
+        qv       = X['qv']
+        MVV       = X['MVV']           # in %
+        Ik        = X['Ik']
+        c         = X['c']
+        
+        dt = self.rec_duration  # [s]
+
+        for k in range(1, num_rec):
+
+            # 1) Normalized flow dynamics: dΦ/dt = (Φ_max * MVV - Φ)/C_f
+            f_MVV = MVV[k-1] / 100.0
+            dPhi = (params['Phi_max'] * f_MVV - Phi[k-1]) / params['Cf'] * dt
+            Phi[k] = Phi[k-1] + dPhi
+
+            # 2) Return water dynamics: dT_ret/dt = (T_h - T_ret)/(C_h * R_fr)
+            dTret = ((Th[k-1] - Tr[k-1]) / params['Rfr']) / params['Ch'] * dt
+            Tr[k] = Tr[k-1] + dTret
+
+            # 3) Current water mass flow & radiator heats
+            m_w = Phi[k-1] * params['m_max']  # kg/s
+            Q_heat_in = m_w * params['cp_w'] * (Tfor[k-1] - Th[k-1])   # Supply→heater
+            Q_heat = m_w * params['cp_w'] * (Th[k-1] - Tr[k-1])        # Heater→room
+
+            # 4) Ventilation heat (q_v in m3/h → /3600 for m3/s)
+            Q_vent = params['rho_air'] * params['cp_air'] * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
+
+            # 5) Internal gains (CO2 occupancy)
+            Q_int_occ = (params['q_pers'] + params['q_equip_var']) * N[k-1]
+            Q_int = Q_int_occ + params['q_equip_const'] * params['S']
+
+            # 6) Solar gains
+            Q_solar = params['g']*params['A']*Ik[k-1]
+
+            # 7) Thermal states
+            dTi = (
+                (Th[k-1] - Ti[k-1]) / (params['Rih'] * params['Ci'])      # Heater→air
+                + (Tm[k-1] - Ti[k-1]) / (params['Rim'] * params['Ci'])     # Mass→air  
+                + (Ta[k-1] - Ti[k-1]) / (params['Rout'] * params['Ci'])    # Air→ambient
+                + (Q_vent + Q_solar + Q_int) / params['Ci']           # Gains
+            ) * dt
+
+            dTh = (
+                (Ti[k-1] - Th[k-1]) / (params['Rih'] * params['Ch'])      # Air→heater (feedback)
+                + Q_heat_in / params['Ch']                                 # Water→heater
+            ) * dt
+
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (params['Rim'] * params['Cm'])      # Air↔mass
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Th[k] = Th[k-1] + dTh
+            Tm[k] = Tm[k-1] + dTm
+
+            # 8) CO2-occupancy (c in ppm)
+            # dc/dt = G*N/V - (q_v/V)*(C - C_out) 
+            # N from CO2 trajectory: N = V*qv/V*(C - C_out)/(E*10^6)
+            # CO2 parameters
+            dc = (
+                1e6 * (params['G'] / params['V']) * N[k-1]                          # Source: ppm/h
+                - qv[k-1] / params['V'] * (c[k-1] - params['c_out'])                                      # Sink: ppm/h
+            ) * dt   
+
+            c[k] = c[k-1] + dc
+
+            # Occupancy from CO2 (deterministic, for reference/display)
+            # N = V * qv / V * (C - C_out) / (E * 10^6) where E = G
+            N_from_CO2 = params['V'] * qv[k-1] / params['V'] * (c[k-1] - params['c_out']) / (params['G'] * 1e6)
+
+            # Random walk for N state (noise handled in estimation)
+            dN = 0.0  # or eta[k] if stochastic process
+            N[k] = N[k-1] + dN
+
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Th': Th, 'Tm': Tm, 'Tr': Tr,  'c': c, 'N': N, 'Phi': Phi}
+        )
