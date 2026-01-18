@@ -101,11 +101,13 @@ class DarkGreyModel(ABC):
                     logger.warning(f'Key `{k}` not found in initial conditions params')
 
         # we are passing X, y to minimise as kwargs
+        # Add max_nfev to prevent infinite optimization
         self.result = lmfit.minimize(
             obj_func or self.def_obj_func,
             self.params,
             kws={'model': self.model, 'X': X, 'y': y},
-            method=method
+            method=method,
+            max_nfev=1000  # Limit function evaluations to prevent endless optimization
         )
 
         self.params = self.result.params
