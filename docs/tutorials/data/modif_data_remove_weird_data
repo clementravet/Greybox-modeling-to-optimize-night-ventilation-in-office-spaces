@@ -5,7 +5,7 @@ from pathlib import Path
 script_dir = Path(__file__).parent
 
 # Read the CSV file using absolute path (with datetime index)
-df = pd.read_csv(script_dir / 'general_data_csv_V2.csv', index_col=0, parse_dates=True)
+df = pd.read_csv(script_dir / 'general_data_csv_V3.csv', index_col=0, parse_dates=True)
 
 # Days to remove (MM/DD format)
 days_to_remove = [
@@ -28,6 +28,6 @@ df_filtered = df_filtered.drop('date_str', axis=1)
 df_filtered = df_filtered.dropna(how='any')
 
 # Save to new file (using absolute path) - keep the index
-df_filtered.to_csv(script_dir / 'general_data_csv_V2_cleaned.csv', index=True)
+df_filtered.to_csv(script_dir / 'general_data_csv_V3_cleaned.csv', index=True)
 
-print("File created: general_data_csv_V2_cleaned.csv")
+print("File created: general_data_csv_V3_cleaned.csv")
