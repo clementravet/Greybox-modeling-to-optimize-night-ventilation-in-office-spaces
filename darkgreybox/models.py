@@ -1029,7 +1029,7 @@ class TiThTmTrcn3R3C(DarkGreyModel):
             Tr[k] = Tr[k-1] + dTret
 
             # 3) Current water mass flow & radiator heats
-            m_w = Phi[k-1] * params['m_max']  # kg/s
+            m_w = Phi[k-1] * params['Phi_max']  # kg/s
             Q_heat_in = m_w * params['cp_w'] * (Tfor[k-1] - Th[k-1])   # Supply→heater
             Q_heat = m_w * params['cp_w'] * (Th[k-1] - Tr[k-1])        # Heater→room
 
