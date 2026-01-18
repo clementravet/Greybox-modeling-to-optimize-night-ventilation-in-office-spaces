@@ -964,30 +964,21 @@ class TiThTmTrcn3R3C(DarkGreyModel):
 
     def model(self, params, X):
         num_rec = len(X['Ta'])
+        dt = self.rec_duration
 
-        # Allocate states
-        Ti  = np.zeros(num_rec)
-        Th  = np.zeros(num_rec)
-        Tm  = np.zeros(num_rec)
-        Tr  = np.zeros(num_rec)
-        c   = np.zeros(num_rec)
-        N   = np.zeros(num_rec)
-        Phi = np.zeros(num_rec)
+        # Extract parameters
+        Ti0 = float(params['Ti0'])
+        Th0 = float(params['Th0'])
+        Tm0 = float(params['Tm0'])
+        Tr0 = float(params['Tr0'])
+        c0 = float(params['c0'])
+        N0 = float(params['N0'])
+        Phi0 = float(params['Phi0'])
 
-        # Initial conditions
-        Ti[0] = params['Ti0']
-        Th[0] = params['Th0']
-        Tm[0] = params['Tm0']
-        Tr[0] = params['Tr0']
-        c[0]  = params['c0']
-        N[0]  = params['N0']
-        Phi[0]  = params['Phi0']
-
-        # Parameters
-        Ci   = params['Ci'].value
-        Ch   = params['Ch'].value
-        Cm   = params['Cm'].value
-        Cf   = params['Cf'].value
+        Ci = params['Ci'].value
+        Ch = params['Ch'].value
+        Cm = params['Cm'].value
+        Cf = params['Cf'].value
         Rih = params['Rih'].value
         Rim = params['Rim'].value
         Rfr = params['Rfr'].value
@@ -1005,86 +996,26 @@ class TiThTmTrcn3R3C(DarkGreyModel):
         Phi_max = params['Phi_max'].value
         cp_w = params['cp_w'].value
         g = params['g'].value
-    
-        # Inputs
-        Ta        = X['Ta']
-        Tfor      = X['Tfor']
-        Tsup      = X['Tsup']
-        qv        = X['qv']
-        MVV       = X['MVV']           # in %
-        Ik        = X['Ik']
-        c_meas    = X['c']             # Renamed to avoid overwriting state array
-        
-        dt = self.rec_duration  
 
-        for k in range(1, num_rec):
+        # Extract inputs as contiguous numpy arrays
+        Ta = np.ascontiguousarray(X['Ta'].values if hasattr(X['Ta'], 'values') else X['Ta'])
+        Tfor = np.ascontiguousarray(X['Tfor'].values if hasattr(X['Tfor'], 'values') else X['Tfor'])
+        Tsup = np.ascontiguousarray(X['Tsup'].values if hasattr(X['Tsup'], 'values') else X['Tsup'])
+        qv = np.ascontiguousarray(X['qv'].values if hasattr(X['qv'], 'values') else X['qv'])
+        MVV = np.ascontiguousarray(X['MVV'].values if hasattr(X['MVV'], 'values') else X['MVV'])
+        Ik = np.ascontiguousarray(X['Ik'].values if hasattr(X['Ik'], 'values') else X['Ik'])
 
-            # 1) Normalized flow dynamics: dΦ/dt = (Φ_max * MVV - Φ)/C_f
-            f_MVV = MVV[k-1] / 100.0
-            dPhi = (Phi_max * f_MVV - Phi[k-1]) / Cf * dt
-            Phi[k] = Phi[k-1] + dPhi
-
-            # 2) Return water dynamics: dT_ret/dt = (T_h - T_ret)/(C_h * R_fr)
-            dTret = ((Th[k-1] - Tr[k-1]) / Rfr) / Ch * dt
-            Tr[k] = Tr[k-1] + dTret
-
-            # 3) Current water mass flow & radiator heats
-            m_w = Phi[k-1] * Phi_max  # kg/s
-            Q_heat_in = m_w * cp_w * (Tfor[k-1] - Th[k-1])   # Supply→heater
-            Q_heat = m_w * cp_w * (Th[k-1] - Tr[k-1])        # Heater→room
-
-            # 4) Ventilation heat (q_v in m3/h → /3600 for m3/s)
-            Q_vent = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
-
-            # 5) Internal gains (CO2 occupancy)
-            Q_int_occ = (q_pers + q_equip_var) * N[k-1]
-            Q_int = Q_int_occ + q_equip_const * S
-
-            # 6) Solar gains
-            Q_solar = g * A * Ik[k-1]
-
-            # 7) Thermal states
-            dTi = (
-                (Th[k-1] - Ti[k-1]) / (Rih * Ci)      # Heater→air
-                + (Tm[k-1] - Ti[k-1]) / (Rim * Ci)     # Mass→air  
-                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
-                + (Q_vent + Q_solar + Q_int) / Ci      # Gains
-            ) * dt
-
-            dTh = (
-                (Ti[k-1] - Th[k-1]) / (Rih * Ch)      # Air→heater (feedback)
-                + Q_heat_in / Ch                       # Water→heater
-            ) * dt
-
-            dTm = (
-                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)      # Air↔mass
-            ) * dt
-
-            Ti[k] = Ti[k-1] + dTi
-            Th[k] = Th[k-1] + dTh
-            Tm[k] = Tm[k-1] + dTm
-
-            # 8) CO2-occupancy (c in ppm)
-            # dc/dt = G*N/V - (q_v/V)*(C - C_out) 
-            # N from CO2 trajectory: N = V*qv/V*(C - C_out)/(E*10^6)
-            # CO2 parameters
-            dc = (
-                1e6 * (G / V) * N[k-1]                          # Source: ppm/h
-                - qv[k-1] / V * (c[k-1] - c_out)                # Sink: ppm/h
-            ) * dt   
-
-            c[k] = c[k-1] + dc
-
-            # Occupancy from CO2 (deterministic, for reference/display)
-            # N = V * qv / V * (C - C_out) / (E * 10^6) where E = G
-            N_from_CO2 = V * qv[k-1] / V * (c[k-1] - c_out) / (G * 1e6)
-
-            # Random walk for N state (noise handled in estimation)
-            dN = 0.0  # or eta[k] if stochastic process
-            N[k] = N[k-1] + dN
-
+        # Call the Numba-accelerated simulation
+        Ti, Th, Tm, Tr, c, N, Phi = _simulate_TiThTmTrcn3R3C(
+            num_rec, dt,
+            Ti0, Th0, Tm0, Tr0, c0, N0, Phi0,
+            Ci, Ch, Cm, Cf, Rih, Rim, Rfr, Rout,
+            q_pers, q_equip_var, q_equip_const,
+            V, S, A, G, c_out, rho_air, cp_air, Phi_max, cp_w, g,
+            Ta, Tfor, Tsup, qv, MVV, Ik
+        )
 
         return DarkGreyModelResult(
             Ti, X, params,
-            {'Ti': Ti, 'Th': Th, 'Tm': Tm, 'Tr': Tr,  'c': c, 'N': N, 'Phi': Phi}
+            {'Ti': Ti, 'Th': Th, 'Tm': Tm, 'Tr': Tr, 'c': c, 'N': N, 'Phi': Phi}
         )
