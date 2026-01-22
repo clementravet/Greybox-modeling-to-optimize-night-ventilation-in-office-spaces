@@ -1090,7 +1090,6 @@ class TiThTmTrcn3R3C(DarkGreyModel):
         )
 
 
-
 class TiTmCn2R2C_summer(DarkGreyModel):
     """
     Grey-box model of one room with:
@@ -1141,6 +1140,11 @@ class TiTmCn2R2C_summer(DarkGreyModel):
         c   = np.zeros(num_rec)
         N   = np.zeros(num_rec)
 
+        # Allocate arrays for outputs
+        Q_int = np.zeros(num_rec)
+        Q_vent = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+
         # Initial conditions
         Ti[0] = params['Ti0']
         Tm[0] = params['Tm0']
@@ -1164,34 +1168,33 @@ class TiTmCn2R2C_summer(DarkGreyModel):
         cp_air = params['cp_air'].value
         g = params['g'].value
         alpha = params['alpha'].value 
-    
+
         # Inputs
         Ta     = X['Ta']
         Tsup   = X['Tsup']
         qv     = X['qv']
         Ik     = X['Ik']
         c_meas = X['c']              # Renamed to avoid overwriting state array
-        
+
         dt = self.rec_duration   
 
         for k in range(1, num_rec):
-
             # 1) Ventilation heat (q_v in m3/h → /3600 for m3/s)
-            Q_vent = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
+            Q_vent[k] = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
 
             # 2) Internal gains (CO2 occupancy)
             Q_int_occ = (q_pers + q_equip_var) * N[k-1]
             Q_int_room = q_equip_const * S
-            Q_int = Q_int_occ + Q_int_room
+            Q_int[k] = Q_int_occ + Q_int_room
 
             # 3) Solar gains
-            Q_solar = g * A * Ik[k-1]
+            Q_solar[k] = g * A * Ik[k-1]
 
             # 4) Thermal states
             dTi = (
                 (Tm[k-1] - Ti[k-1]) / (Rim * Ci)     # Mass→air  
                 + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
-                + (Q_vent + Q_solar + Q_int) / Ci     # Gains
+                + (Q_vent[k] + Q_solar[k] + Q_int[k]) / Ci     # Gains
             ) * dt
 
             dTm = (
@@ -1217,10 +1220,15 @@ class TiTmCn2R2C_summer(DarkGreyModel):
 
             # Dynamic N update: EMA filter (alpha=0.1 tunes responsiveness; adjust 0.05-0.2)
             N[k] = (1 - alpha) * N[k-1] + alpha * N_from_CO2
-            
+
+        # Set initial values for Q_int, Q_vent, Q_solar (optional: repeat first computed value)
+        Q_int[0] = Q_int[1]
+        Q_vent[0] = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+
         return DarkGreyModelResult(
             Ti, X, params,
-            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N}
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar}
         )
 
 
