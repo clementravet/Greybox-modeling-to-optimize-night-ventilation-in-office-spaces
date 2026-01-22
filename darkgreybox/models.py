@@ -1269,7 +1269,7 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
     c_out : Outdoor CO2 fraction (ppm)
     q_pers, q_equip_var : Gains/person (W/person)
     q_equip_const : Constant gains (W/m²)
-    g : total solar energy transmittance of the glazing 
+    g0 : total solar energy transmittance of the glazing 
     alpha : EMA filter parameter for occupancy update
     gamma_g : gamma from the glazing (degrees)
     n : refractive index for IAM calculation
