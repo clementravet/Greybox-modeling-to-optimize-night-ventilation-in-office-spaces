@@ -1269,7 +1269,7 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
     c_out : Outdoor CO2 fraction (ppm)
     q_pers, q_equip_var : Gains/person (W/person)
     q_equip_const : Constant gains (W/m²)
-    g0 : total solar energy transmittance of the glazing 
+    g : total solar energy transmittance of the glazing 
     alpha : EMA filter parameter for occupancy update
     gamma_g : gamma from the glazing (degrees)
     n : refractive index for IAM calculation
@@ -1312,7 +1312,7 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
         c_out = params['c_out'].value
         rho_air = params['rho_air'].value
         cp_air = params['cp_air'].value
-        g0 = params['g0'].value
+        g = params['g'].value
         alpha = params['alpha'].value 
         gamma_g = params['gamma_g'].value
         n = params['n'].value
@@ -1347,7 +1347,7 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
 
             # IAM params: n, K(1/m), L(m)
             iam = pvlib.iam.physical(aoi, n=n, K=K, L=L)
-            g = g0 * iam
+            g = g * iam
 
             Q_solar[k] = g * A * Ik[k-1]
 
