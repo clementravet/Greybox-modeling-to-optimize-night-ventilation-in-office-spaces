@@ -1088,3 +1088,139 @@ class TiThTmTrcn3R3C(DarkGreyModel):
             Ti, X, params,
             {'Ti': Ti, 'Th': Th, 'Tm': Tm, 'Tr': Tr,  'c': c, 'N': N, 'Phi': Phi}
         )
+
+
+
+class TiTmCn3R2C(DarkGreyModel):
+    """
+    Grey-box model of one room with:
+      - 3R2C thermal model (Ti, Tm)
+      - Ventilation via q_v (m3/h), solar and internal gains
+      - CO2-based grey-box occupancy sub-model (c in ppm)
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Tm  : Lumped thermal mass temperature (°C)
+    c   : Indoor CO2 concentration (ppm)
+    N   : Effective occupancy (persons)
+
+    Inputs X
+    --------
+    Ta      : Ambient temperature (°C)
+    Tsup    : Supply air temperature for ventilation (°C)
+    qv      : Ventilation flow rate (m3/h)
+    Ik      : Irradiance (W/m²)
+    c       : CO2 concentration (ppm) [measured]
+
+    Parameters (params)
+    ------------------
+    Ti0, Tm0, c0, N0 : Initial states
+    Ci  : Air + light capacitance (J/K)
+    Cm  : Thermal mass capacitance (J/K)
+    Rim : Resistance Ti-Tm (K/W)
+    Rout: Resistance Ti-Ta (K/W)
+    rho_air, cp_air: Air density (kg/m3), specific heat of air (J/kgK)
+    V     : Room volume (m³)
+    S     : Room surface (m²)
+    A     : Window area (m²)
+    G     : CO2 emission/person (m³/h/person)
+    c_out : Outdoor CO2 fraction (ppm)
+    q_pers, q_equip_var : Gains/person (W/person)
+    q_equip_const : Constant gains (W/m²)
+    g : total solar energy transmittance of the glazing 
+    alpha : EMA filter parameter for occupancy update
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states
+        Ti  = np.zeros(num_rec)
+        Tm  = np.zeros(num_rec)
+        c   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # Parameters
+        Ci   = params['Ci'].value
+        Cm   = params['Cm'].value
+        Rim  = params['Rim'].value
+        Rout = params['Rout'].value
+        q_pers = params['q_pers'].value
+        q_equip_var = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V = params['V'].value
+        S = params['S'].value
+        A = params['A'].value
+        G = params['G'].value
+        c_out = params['c_out'].value
+        rho_air = params['rho_air'].value
+        cp_air = params['cp_air'].value
+        g = params['g'].value
+        alpha = params['alpha'].value 
+    
+        # Inputs
+        Ta     = X['Ta']
+        Tsup   = X['Tsup']
+        qv     = X['qv']
+        Ik     = X['Ik']
+        c_meas = X['c']              # Renamed to avoid overwriting state array
+        
+        dt = self.rec_duration   
+
+        for k in range(1, num_rec):
+
+            # 1) Ventilation heat (q_v in m3/h → /3600 for m3/s)
+            Q_vent = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
+
+            # 2) Internal gains (CO2 occupancy)
+            Q_int_occ = (q_pers + q_equip_var) * N[k-1]
+            Q_int_room = q_equip_const * S
+            Q_int = Q_int_occ + Q_int_room
+
+            # 3) Solar gains
+            Q_solar = g * A * Ik[k-1]
+
+            # 4) Thermal states
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)     # Mass→air  
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
+                + (Q_vent + Q_solar + Q_int) / Ci     # Gains
+            ) * dt
+
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)     # Air↔mass
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+            # 5) CO2-occupancy (c in ppm)
+            # dc/dt = G*N/V - (q_v/V)*(C - C_out) 
+            # N from CO2 trajectory: N = V*qv/V*(C - C_out)/(E*10^6)
+            # CO2 parameters
+            dc = (
+                1e6 * (G / V) * N[k-1]                   # Source: ppm/h
+                - qv[k-1] / V * (c[k-1] - c_out)         # Sink: ppm/h
+            ) * dt   
+
+            c[k] = c[k-1] + dc
+
+            # Occupancy from CO2 (deterministic, for reference/display)
+            N_from_CO2 = (qv[k-1] / G) * ((c[k] - c_out) / 1e6)  # persons (steady-state inversion)
+
+            # Dynamic N update: EMA filter (alpha=0.1 tunes responsiveness; adjust 0.05-0.2)
+            N[k] = (1 - alpha) * N[k-1] + alpha * N_from_CO2
+            
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N}
+        )
+
+
