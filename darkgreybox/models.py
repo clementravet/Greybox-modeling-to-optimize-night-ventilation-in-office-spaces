@@ -1091,7 +1091,7 @@ class TiThTmTrcn3R3C(DarkGreyModel):
 
 
 
-class TiTmCn3R2C(DarkGreyModel):
+class TiTmCn2R2C_summer(DarkGreyModel):
     """
     Grey-box model of one room with:
       - 3R2C thermal model (Ti, Tm)
