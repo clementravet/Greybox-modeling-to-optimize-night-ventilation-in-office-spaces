@@ -1345,10 +1345,9 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
             delta_gamma_deg = gamma_s[k-1] - gamma_g     
             cos_theta = np.cos(np.radians(alpha_deg)) * np.cos(np.radians(delta_gamma_deg))
             aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, -1, 1)))  # Extra clip safety
-            aoi_rad = np.radians(aoi_deg)
 
             # IAM params: n, K(1/m), L(m)
-            iam = pvlib.iam.physical(aoi_rad, n=n, K=K, L=L)
+            iam = pvlib.iam.physical(aoi_deg, n=n, K=K, L=L)
 
             Q_solar[k] = g * iam * A * Ik[k-1]
 
