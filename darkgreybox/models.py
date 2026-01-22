@@ -1340,17 +1340,12 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
             Q_int[k] = Q_int_occ + Q_int_room
 
             # 3) Solar gains
-            # Incidence angle
-            theta_z_true = np.clip(90 - theta_z[k-1], 0, 90)  # Your theta_z = elevation → zenith
-            alpha_deg = 90 - theta_z_true  # Now proper altitude [0,90]
+            alpha_deg = np.clip(theta_z[k-1], 0, 90)  # Elevation → altitude
             delta_gamma_deg = gamma_s[k-1] - gamma_g     
             cos_theta = np.cos(np.radians(alpha_deg)) * np.cos(np.radians(delta_gamma_deg))
-            aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, -1, 1)))  # Extra clip safety
-
-            # IAM params: n, K(1/m), L(m)
+            aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, 0, 1)))  # cos_theta >=0 only!
             iam = pvlib.iam.physical(aoi_deg, n=n, K=K, L=L)
-
-            Q_solar[k] = g * iam * A * Ik[k-1]
+            Q_solar[k] = g * np.nan_to_num(iam, 0.8) * A * Ik[k-1]
 
             # 4) Thermal states
             dTi = (
