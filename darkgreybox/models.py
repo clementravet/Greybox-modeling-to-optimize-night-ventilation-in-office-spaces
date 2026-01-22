@@ -1341,13 +1341,14 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
 
             # 3) Solar gains
             # Incidence angle
-            alpha = 90 - theta_z[k-1]
-            delta_gamma = gamma_s[k-1] - gamma_g     
-            aoi = np.degrees(np.arccos(np.cos(np.radians(alpha)) * np.cos(np.radians(delta_gamma))))
-            aoi = np.clip(aoi, 0, 90)
+            alpha_deg = 90 - theta_z[k-1]
+            delta_gamma_deg = gamma_s[k-1] - gamma_g     
+            cos_theta = np.cos(np.radians(alpha_deg)) * np.cos(np.radians(delta_gamma_deg))
+            aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, -1, 1)))  # Extra clip safety
+            aoi_rad = np.radians(aoi_deg)
 
             # IAM params: n, K(1/m), L(m)
-            iam = pvlib.iam.physical(aoi, n=n, K=K, L=L)
+            iam = pvlib.iam.physical(aoi_rad, n=n, K=K, L=L)
 
             Q_solar[k] = g * iam * A * Ik[k-1]
 
