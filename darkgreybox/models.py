@@ -1341,15 +1341,14 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
 
             # 3) Solar gains
             # Incidence angle
-            alpha = 90 - theta_z
-            delta_gamma = gamma_s - gamma_g     
+            alpha = 90 - theta_z[k-1]
+            delta_gamma = gamma_s[k-1] - gamma_g     
             aoi = np.degrees(np.arccos(np.cos(np.radians(alpha)) * np.cos(np.radians(delta_gamma))))
 
             # IAM params: n, K(1/m), L(m)
             iam = pvlib.iam.physical(aoi, n=n, K=K, L=L)
-            g = g * iam
 
-            Q_solar[k] = g * A * Ik[k-1]
+            Q_solar[k] = g * iam * A * Ik[k-1]
 
             # 4) Thermal states
             dTi = (
