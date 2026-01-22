@@ -1205,9 +1205,6 @@ class TiTmCn2R2C_summer(DarkGreyModel):
             Tm[k] = Tm[k-1] + dTm
 
             # 5) CO2-occupancy (c in ppm)
-            # dc/dt = G*N/V - (q_v/V)*(C - C_out) 
-            # N from CO2 trajectory: N = V*qv/V*(C - C_out)/(E*10^6)
-            # CO2 parameters
             dc = (
                 1e6 * (G / V) * N[k-1]                   # Source: ppm/h
                 - qv[k-1] / V * (c[k-1] - c_out)         # Sink: ppm/h
@@ -1215,8 +1212,8 @@ class TiTmCn2R2C_summer(DarkGreyModel):
 
             c[k] = c[k-1] + dc
 
-            # Occupancy from CO2 (deterministic, for reference/display)
-            N_from_CO2 = (qv[k-1] / G) * ((c[k] - c_out) / 1e6)  # persons (steady-state inversion)
+            # N from CO2 (steady-state, using updated c[k])
+            N_from_CO2 = qv[k-1] * (c[k] - c_out) / (G * 1e6)  # persons (steady-state inversion)
 
             # Dynamic N update: EMA filter (alpha=0.1 tunes responsiveness; adjust 0.05-0.2)
             N[k] = (1 - alpha) * N[k-1] + alpha * N_from_CO2
