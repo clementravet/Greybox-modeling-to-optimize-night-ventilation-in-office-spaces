@@ -1344,6 +1344,7 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
             alpha = 90 - theta_z[k-1]
             delta_gamma = gamma_s[k-1] - gamma_g     
             aoi = np.degrees(np.arccos(np.cos(np.radians(alpha)) * np.cos(np.radians(delta_gamma))))
+            aoi = np.clip(aoi, 0, 90)
 
             # IAM params: n, K(1/m), L(m)
             iam = pvlib.iam.physical(aoi, n=n, K=K, L=L)
