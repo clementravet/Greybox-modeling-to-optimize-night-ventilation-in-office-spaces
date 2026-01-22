@@ -1341,7 +1341,8 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
 
             # 3) Solar gains
             # Incidence angle
-            alpha_deg = 90 - theta_z[k-1]
+            theta_z_true = np.clip(90 - theta_z[k-1], 0, 90)  # Your theta_z = elevation → zenith
+            alpha_deg = 90 - theta_z_true  # Now proper altitude [0,90]
             delta_gamma_deg = gamma_s[k-1] - gamma_g     
             cos_theta = np.cos(np.radians(alpha_deg)) * np.cos(np.radians(delta_gamma_deg))
             aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, -1, 1)))  # Extra clip safety
