@@ -1328,7 +1328,14 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
         theta_z = X['theta_z']  
         gamma_s = X['gamma_s']  
 
-        dt = self.rec_duration   
+        dt = self.rec_duration  
+
+        # Pre-compute outside the loop for solar gains
+        alpha_deg_all = np.clip(theta_z, 0, 90)  # All timesteps
+        delta_gamma_deg_all = gamma_s - gamma_g  # All timesteps
+        cos_theta_all = np.cos(np.radians(alpha_deg_all)) * np.cos(np.radians(delta_gamma_deg_all))
+        aoi_deg_all = np.degrees(np.arccos(np.clip(cos_theta_all, 0, 1)))
+        iam_all = pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L)  # Compute once for all timesteps
 
         for k in range(1, num_rec):
             # 1) Ventilation heat (q_v in m3/h → /3600 for m3/s)
@@ -1340,12 +1347,12 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
             Q_int[k] = Q_int_occ + Q_int_room
 
             # 3) Solar gains
-            alpha_deg = np.clip(theta_z[k-1], 0, 90)  # Elevation → altitude
-            delta_gamma_deg = gamma_s[k-1] - gamma_g     
-            cos_theta = np.cos(np.radians(alpha_deg)) * np.cos(np.radians(delta_gamma_deg))
-            aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, 0, 1)))  # cos_theta >=0 only!
-            iam = pvlib.iam.physical(aoi_deg, n=n, K=K, L=L)
-            Q_solar[k] = g * np.nan_to_num(iam, 0.8) * A * Ik[k-1]
+            #alpha_deg = np.clip(theta_z[k-1], 0, 90)  # Elevation → altitude
+            #delta_gamma_deg = gamma_s[k-1] - gamma_g     
+            #cos_theta = np.cos(np.radians(alpha_deg)) * np.cos(np.radians(delta_gamma_deg))
+            #aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, 0, 1)))  # cos_theta >=0 only!
+            #iam = pvlib.iam.physical(aoi_deg, n=n, K=K, L=L)
+            Q_solar[k] = g * np.nan_to_num(iam_all[k-1], 0.8) * A * Ik[k-1]
 
             # 4) Thermal states
             dTi = (
