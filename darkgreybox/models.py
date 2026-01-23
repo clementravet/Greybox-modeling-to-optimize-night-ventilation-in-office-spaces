@@ -1340,21 +1340,12 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
             Q_int[k] = Q_int_occ + Q_int_room
 
             # 3) Solar gains
-            #alpha_deg = np.clip(theta_z[k-1], 0, 90)  # Elevation → altitude
-            #delta_gamma_deg = gamma_s[k-1] - gamma_g     
-            #cos_theta = np.cos(np.radians(alpha_deg)) * np.cos(np.radians(delta_gamma_deg))
-            #aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, 0, 1)))  # cos_theta >=0 only!
-            #iam = pvlib.iam.physical(aoi_deg, n=n, K=K, L=L)
-            #Q_solar[k] = g * np.nan_to_num(iam, 0.8) * A * Ik[k-1]
-
-            # 3) Solar gains
-            alpha_deg = np.clip(theta_z[k-1], 0, 89)  # Elevation <90°
-            delta_gamma_deg = ((gamma_s[k-1] - gamma_g + 180) % 360) - 180  # [-180,180]
+            alpha_deg = np.clip(theta_z[k-1], 0, 90)  # Elevation → altitude
+            delta_gamma_deg = gamma_s[k-1] - gamma_g     
             cos_theta = np.cos(np.radians(alpha_deg)) * np.cos(np.radians(delta_gamma_deg))
-            aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, 0.01, 1)))  # [0,88°] MAX!
+            aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, 0, 1)))  # cos_theta >=0 only!
             iam = pvlib.iam.physical(aoi_deg, n=n, K=K, L=L)
-            iam = np.nan_to_num(np.clip(iam, 0, 1), 0.8)  # Bulletproof cleanup
-            Q_solar[k] = g * iam * A * Ik[k-1]
+            Q_solar[k] = g * np.nan_to_num(iam, 0.8) * A * Ik[k-1]
 
             # 4) Thermal states
             dTi = (
