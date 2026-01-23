@@ -1331,26 +1331,37 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
         dt = self.rec_duration  
 
         # Pre-compute OUTSIDE the loop
-        #theta_z_array = np.array(theta_z)  # Convert list to array
-        #gamma_s_array = np.array(gamma_s)  # Convert list to array
-        #alpha_deg_all = np.clip(theta_z_array, 0, 90)
-        #delta_gamma_deg_all = gamma_s_array - gamma_g  # Now works: array - scalar
-        #cos_theta_all = np.cos(np.radians(alpha_deg_all)) * np.cos(np.radians(delta_gamma_deg_all))
-        #aoi_deg_all = np.degrees(np.arccos(np.clip(cos_theta_all, 0, 1)))
+        #theta_z_array = np.array(theta_z)  # Solar zenith angle
+        #gamma_s_array = np.array(gamma_s)  # Solar azimuth angle
+        # Calculate angle of incidence using pvlib (correct formula)
+        #aoi_deg_all = pvlib.irradiance.aoi(
+        #    surface_tilt=90,          # 90° for vertical surface, 0° for horizontal
+        #    surface_azimuth=gamma_g,  # Surface orientation (your gamma_g)
+        #    solar_zenith=theta_z_array,
+        #    solar_azimuth=gamma_s_array
+        #)
+        # Apply physical IAM model
         #iam_all = pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L)
 
+
         # Pre-compute OUTSIDE the loop
-        theta_z_array = np.array(theta_z)  # Solar zenith angle
-        gamma_s_array = np.array(gamma_s)  # Solar azimuth angle
-        # Calculate angle of incidence using pvlib (correct formula)
+        theta_z_array = np.array(theta_z)
+        gamma_s_array = np.array(gamma_s)
+        # Calculate angle of incidence
         aoi_deg_all = pvlib.irradiance.aoi(
-            surface_tilt=90,          # 90° for vertical surface, 0° for horizontal
-            surface_azimuth=gamma_g,  # Surface orientation (your gamma_g)
+            surface_tilt=90,          # Adjust based on your surface (90 = vertical)
+            surface_azimuth=gamma_g,
             solar_zenith=theta_z_array,
             solar_azimuth=gamma_s_array
         )
-        # Apply physical IAM model
-        iam_all = pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L)
+        # Only apply IAM when sun is facing the surface (AOI <= 90°)
+        iam_all = np.where(
+            aoi_deg_all <= 90,
+            pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L),
+            0  # Zero when sun is behind surface
+        )
+        # Replace any remaining NaN with 0 (not 0.8!)
+        iam_all = np.nan_to_num(iam_all, nan=0.0)
 
         for k in range(1, num_rec):
             # 1) Ventilation heat (q_v in m3/h → /3600 for m3/s)
