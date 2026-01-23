@@ -1330,12 +1330,14 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
 
         dt = self.rec_duration  
 
-        # Pre-compute outside the loop for solar gains
-        alpha_deg_all = np.clip(theta_z, 0, 90)  # All timesteps
-        delta_gamma_deg_all = gamma_s - gamma_g  # All timesteps
+        # Pre-compute OUTSIDE the loop
+        theta_z_array = np.array(theta_z)  # Convert list to array
+        gamma_s_array = np.array(gamma_s)  # Convert list to array
+        alpha_deg_all = np.clip(theta_z_array, 0, 90)
+        delta_gamma_deg_all = gamma_s_array - gamma_g  # Now works: array - scalar
         cos_theta_all = np.cos(np.radians(alpha_deg_all)) * np.cos(np.radians(delta_gamma_deg_all))
         aoi_deg_all = np.degrees(np.arccos(np.clip(cos_theta_all, 0, 1)))
-        iam_all = pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L)  # Compute once for all timesteps
+        iam_all = pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L)
 
         for k in range(1, num_rec):
             # 1) Ventilation heat (q_v in m3/h → /3600 for m3/s)
