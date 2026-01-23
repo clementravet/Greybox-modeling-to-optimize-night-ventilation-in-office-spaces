@@ -1349,19 +1349,17 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
         gamma_s_array = np.array(gamma_s)
         # Calculate angle of incidence
         aoi_deg_all = pvlib.irradiance.aoi(
-            surface_tilt=90,          # Adjust based on your surface (90 = vertical)
+            surface_tilt=90,          # Adjust: 90=vertical, 0=horizontal
             surface_azimuth=gamma_g,
             solar_zenith=theta_z_array,
             solar_azimuth=gamma_s_array
         )
-        # Only apply IAM when sun is facing the surface (AOI <= 90°)
-        iam_all = np.where(
+        # Simple cosine correction (0 when AOI > 90°, cos(AOI) otherwise)
+        cos_correction = np.where(
             aoi_deg_all <= 90,
-            pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L),
-            0  # Zero when sun is behind surface
-        )
-        # Replace any remaining NaN with 0 (not 0.8!)
-        iam_all = np.nan_to_num(iam_all, nan=0.0)
+            np.cos(np.radians(aoi_deg_all)),
+            0
+        )  
 
         for k in range(1, num_rec):
             # 1) Ventilation heat (q_v in m3/h → /3600 for m3/s)
@@ -1378,7 +1376,7 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
             #cos_theta = np.cos(np.radians(alpha_deg)) * np.cos(np.radians(delta_gamma_deg))
             #aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, 0, 1)))  # cos_theta >=0 only!
             #iam = pvlib.iam.physical(aoi_deg, n=n, K=K, L=L)
-            Q_solar[k] = g * np.nan_to_num(iam_all[k-1], 0.8) * A * Ik[k-1]
+            Q_solar[k] = g * cos_correction[k-1] * A * Ik[k-1]
 
             # 4) Thermal states
             dTi = (
