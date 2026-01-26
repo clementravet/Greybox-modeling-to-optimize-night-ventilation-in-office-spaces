@@ -1828,8 +1828,6 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
         sigma_Ti =params['sigma_Ti'].value  # °C/√h
         sigma_Tm =params['sigma_Tm'].value  # °C/√h
         sigma_N = params['sigma_N'].value  # persons/√h
-        sigma_obs_Ti = params['sigma_obs_Ti'].value  # °C
-        sigma_obs_c = params['sigma_obs_c'].value  # ppm
         tau_N = params['tau_N'].value  # Relaxation time (seconds)
 
         # Inputs
