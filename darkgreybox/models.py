@@ -1362,7 +1362,8 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
         #) 
 
         # Pre-compute OUTSIDE the loop
-        theta_z_array = np.array(theta_z)  # Solar zenith angle
+        theta_z_elevation = np.array(theta_z)  # Your current data (elevation)
+        theta_z_array = 90 - theta_z_elevation  # Convert to zenith angle
         gamma_s_array = np.array(gamma_s)  # Solar azimuth angle
 
         # Define your surface parameters
