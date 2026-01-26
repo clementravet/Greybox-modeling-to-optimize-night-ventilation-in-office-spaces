@@ -1881,8 +1881,8 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
             
             # Step 2: Compute "measured" N from observed CO2
             # Using steady-state inversion: N = (qv / (G * 10^6)) * (c_meas - c_out)
-            if qv[k] > 0 and G > 0:
-                N_meas = max(0, (qv[k] / (G * 1e6)) * (c_meas[k] - c_out))
+            if qv[k-1] > 0 and G > 0:
+                N_meas = max(0, (qv[k-1] / (G * 1e6)) * (c_meas[k-1] - c_out))
             else:
                 N_meas = 0.0
             
@@ -1905,7 +1905,7 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
 
 
             # 6) Model CO2 for validation using updated N
-            dc = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
+            dc = (1e6 * (G / V) * N[k] - qv[k-1] / V * (c[k-1] - c_out)) * dt
             c[k] = c[k-1] + dc
 
 
