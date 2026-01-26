@@ -1804,7 +1804,7 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
         Tm[0] = params['Tm0']
         c[0]  = params['c0']
         N[0]  = params['N0']
-        P_N[0] = params['P_N0'].value if 'P_N0' in params else 1.0
+        P_N[0] = params['P_N_init'].value if 'P_N_init' in params else 1.0
 
 
         # Parameters
