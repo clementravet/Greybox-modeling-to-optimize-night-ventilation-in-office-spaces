@@ -1345,21 +1345,39 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
 
 
         # Pre-compute OUTSIDE the loop
-        theta_z_array = np.array(theta_z)
-        gamma_s_array = np.array(gamma_s)
+        #theta_z_array = np.array(theta_z)
+        #gamma_s_array = np.array(gamma_s)
         # Calculate angle of incidence
-        aoi_deg_all = pvlib.irradiance.aoi(
-            surface_tilt=90,          # Adjust: 90=vertical, 0=horizontal
-            surface_azimuth=gamma_g,
-            solar_zenith=theta_z_array,
-            solar_azimuth=gamma_s_array
-        )
+        #aoi_deg_all = pvlib.irradiance.aoi(
+        #    surface_tilt=90,          # Adjust: 90=vertical, 0=horizontal
+        #    surface_azimuth=gamma_g,
+        #    solar_zenith=theta_z_array,
+        #    solar_azimuth=gamma_s_array
+        #)
         # Simple cosine correction (0 when AOI > 90°, cos(AOI) otherwise)
-        cos_correction = np.where(
-            aoi_deg_all <= 90,
-            np.cos(np.radians(aoi_deg_all)),
-            0
-        )  
+        #cos_correction = np.where(
+        #    aoi_deg_all <= 90,
+        #    np.cos(np.radians(aoi_deg_all)),
+        #    0
+        #) 
+
+        # Pre-compute OUTSIDE the loop
+        theta_z_array = np.array(theta_z)  # Solar zenith angle
+        gamma_s_array = np.array(gamma_s)  # Solar azimuth angle
+
+        # Define your surface parameters
+        beta = 90  # Surface tilt: 90° for vertical wall, 0° for horizontal
+        # gamma_g is your surface azimuth (already defined)
+
+        # Manual AOI calculation using standard formula
+        cos_aoi = (
+            np.cos(np.radians(theta_z_array)) * np.cos(np.radians(beta)) +
+            np.sin(np.radians(theta_z_array)) * np.sin(np.radians(beta)) * 
+            np.cos(np.radians(gamma_s_array - gamma_g))
+        )
+
+        # Clip to valid range and set negative values (sun behind surface) to 0
+        cos_correction = np.clip(cos_aoi, 0, 1)
 
         for k in range(1, num_rec):
             # 1) Ventilation heat (q_v in m3/h → /3600 for m3/s)
