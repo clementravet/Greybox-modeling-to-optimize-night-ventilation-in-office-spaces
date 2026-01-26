@@ -1922,3 +1922,184 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
             Ti, X, params,
             {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 'P_N': P_N, 'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar}
         )
+
+
+class TiTmCn2R2C_summer_V6(DarkGreyModel):
+    """
+    Grey-box model with Christoffer Rasmussen's time-dependent solar aperture.
+    
+    Key Innovation: Instead of a single constant 'g' parameter, the solar 
+    aperture varies throughout the day using B-spline basis functions:
+    g(t) = phi_0*B_0(t) + phi_1*B_1(t) + ... + phi_n*B_n(t)
+    
+    This captures how solar gains vary with sun position more accurately.
+    
+    Parameters (CHANGED)
+    --------------------
+    phi_0, phi_1, ..., phi_n : B-spline coefficients for solar aperture
+    (replaces the single 'g' parameter)
+    
+    Inputs X (ADDED)
+    ----------------
+    bs_0, bs_1, ..., bs_n : Pre-computed B-spline basis functions
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states
+        Ti  = np.zeros(num_rec)
+        Tm  = np.zeros(num_rec)
+        c   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+        P_N = np.zeros(num_rec)  # Variance of N estimate
+
+        # Allocate arrays for outputs
+        Q_int = np.zeros(num_rec)
+        Q_vent = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+        P_N[0] = params['P_N_init'].value if 'P_N_init' in params else 1.0
+
+        # Parameters (same as before)
+        Ci   = params['Ci'].value
+        Cm   = params['Cm'].value
+        Rim  = params['Rim'].value
+        Rout = params['Rout'].value
+        q_pers = params['q_pers'].value
+        q_equip_var = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V = params['V'].value
+        S = params['S'].value
+        A = params['A'].value
+        G = params['G'].value
+        c_out = params['c_out'].value
+        rho_air = params['rho_air'].value
+        cp_air = params['cp_air'].value
+        alpha = params['alpha'].value 
+        gamma_g = params['gamma_g'].value
+        n = params['n'].value
+        K = params['K'].value
+        L = params['L'].value
+        # Kalman filter noise parameters
+        Q_N = params['Q_N'].value if 'Q_N' in params else 0.1   # Process noise for N
+        R_C = params['R_C'].value if 'R_C' in params else 100.0  # Measurement noise
+
+        # NEW: Extract B-spline coefficients instead of single 'g'
+        phi_names = ['phi_a', 'phi_b', 'phi_c', 'phi_d', 'phi_e', 'phi_f', 'phi_g', 'phi_h', 'phi_i', 'phi_j']
+        phi = np.array([params[name].value for name in phi_names])
+        n_bsplines = len(phi)   
+
+        # Inputs
+        Ta     = X['Ta']
+        Tsup   = X['Tsup']
+        qv     = X['qv']
+        Ik     = X['Ik']
+        c_meas = X['c']
+        theta_z = X['theta_z']  
+        gamma_s = X['gamma_s']
+
+        # NEW: Extract B-spline basis functions from inputs
+        bsplines = np.column_stack([X[f'bs_{i}'] for i in range(n_bsplines)])
+
+        dt = self.rec_duration  
+
+        # Pre-compute OUTSIDE the loop
+        theta_z_array = 90 - np.array(theta_z)  # Convert elevation to zenith
+        gamma_s_array = np.array(gamma_s)
+        
+        # Calculate angle of incidence
+        aoi_deg_all = pvlib.irradiance.aoi(
+            surface_tilt=90,
+            surface_azimuth=gamma_g,
+            solar_zenith=theta_z_array,
+            solar_azimuth=gamma_s_array
+        )
+        
+        # Apply physical IAM model
+        iam_all = pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L)
+
+        # NEW: Compute time-varying solar aperture g(t) using B-splines
+        # This is Rasmussen's key innovation: g varies smoothly with time
+        g_t = bsplines @ phi  # Matrix multiply: [num_rec × n] @ [n] = [num_rec]
+
+        for k in range(1, num_rec):
+            # 1) Ventilation heat
+            Q_vent[k] = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
+
+            # 2) Internal gains
+            Q_int_occ = (q_pers + q_equip_var) * N[k-1]
+            Q_int_room = q_equip_const * S
+            Q_int[k] = Q_int_occ + Q_int_room
+
+            # 3) Solar gains - UPDATED with time-varying g(t)
+            # OLD: Q_solar[k] = g * iam_all[k-1] * A * Ik[k-1]
+            # NEW: g is now g_t[k-1], which varies with time of day
+            Q_solar[k] = g_t[k-1] * iam_all[k-1] * A * Ik[k-1]
+
+            # 4) Thermal states
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+                + (Q_vent[k] + Q_solar[k] + Q_int[k]) / Ci
+            ) * dt
+
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+            # 5) CO2-occupancy with KALMAN FILTER
+            
+            # === KALMAN FILTER FOR N ===
+            # Step 1: PREDICT N (random walk model)
+            N_pred = N[k-1]
+            P_pred = P_N[k-1] + Q_N * dt  # Variance grows with process noise
+            
+            # Step 2: Compute "measured" N from observed CO2
+            # Using steady-state inversion: N = (qv / (G * 10^6)) * (c_meas - c_out)
+            if qv[k-1] > 0 and G > 0:
+                N_meas = max(0, (qv[k-1] / (G * 1e6)) * (c_meas[k-1] - c_out))
+            else:
+                N_meas = 0.0
+            
+            # Step 3: MEASUREMENT UPDATE
+            # Innovation (difference between measured and predicted N)
+            y_innov = N_meas - N_pred
+            
+            # Innovation covariance: S = P_pred + R
+            S = P_pred + R_C
+            
+            # Kalman gain
+            K = P_pred / S if S > 1e-10 else 0.0
+            
+            # Update N estimate
+            N[k] = N_pred + K * y_innov
+            N[k] = max(0, N[k])  # N cannot be negative
+            
+            # Update variance
+            P_N[k] = (1 - K) * P_pred
+
+
+            # 6) Model CO2 for validation using updated N
+            #dc = (1e6 * (G / V) * N[k] - qv[k-1] / V * (c[k-1] - c_out)) * dt
+            #c[k] = c[k-1] + dc
+
+            # Store measured CO2:
+            c[k] = c_meas[k]
+
+        Q_int[0] = Q_int[1]
+        Q_vent[0] = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar}
+        )
