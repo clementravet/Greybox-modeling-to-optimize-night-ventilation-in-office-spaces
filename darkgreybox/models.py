@@ -1,3 +1,4 @@
+from ast import Param
 import numpy as np
 import pvlib
 
@@ -1829,6 +1830,7 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
         sigma_Tm =params['sigma_Tm'].value  # °C/√h
         sigma_N = params['sigma_N'].value  # persons/√h
         tau_N = params['tau_N'].value  # Relaxation time (seconds)
+        N_max = params['N_max'].value  # Maximum occupancy (room capacity)
 
         # Inputs
         Ta     = X['Ta']
@@ -1884,7 +1886,6 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
             N[k] = max(0, N[k-1] + dN_drift + dN_diffusion)
             
             # Bound N to physical limits (room capacity)
-            N_max = params.get('N_max', Param(50)).value
             N[k] = min(N[k], N_max)
             
             # 6) CO2 dynamics (forward model for validation)
