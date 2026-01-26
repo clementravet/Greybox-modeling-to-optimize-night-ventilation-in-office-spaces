@@ -1734,10 +1734,11 @@ class TiTmCn2R2C_summer_V4(DarkGreyModel):
 
 class TiTmCn2R2C_summer_V5(DarkGreyModel):
     """
-    Stochastic grey-box model (SDE) with:
+    Grey-box model with:
       - 3R2C thermal model (Ti, Tm)
-      - CO2-based occupancy estimation with process noise
-      - Kalman filter-ready structure
+      - CO2-based occupancy estimation
+      - Deterministic for parameter estimation
+
 
     States
     ------
@@ -1746,6 +1747,7 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
     c   : Indoor CO2 concentration (ppm)
     N   : Effective occupancy (persons)
 
+
     Inputs X
     --------
     Ta      : Ambient temperature (°C)
@@ -1753,6 +1755,7 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
     qv      : Ventilation flow rate (m3/h)
     Ik      : Irradiance (W/m²)
     c       : CO2 concentration (ppm) [measured]
+
 
     Parameters (params)
     ------------------
@@ -1770,22 +1773,14 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
     q_pers, q_equip_var : Gains/person (W/person)
     q_equip_const : Constant gains (W/m²)
     g : total solar energy transmittance of the glazing 
-    alpha : EMA filter parameter for occupancy update
-
-    Process Noise (diffusion terms)
-    --------------------------------
-    sigma_Ti : Temperature diffusion coefficient
-    sigma_Tm : Mass temperature diffusion coefficient  
-    sigma_N  : Occupancy diffusion coefficient
-    
-    Measurement Noise
-    -----------------
-    sigma_obs_Ti : Temperature measurement noise std
-    sigma_obs_c  : CO2 measurement noise std
+    tau_N : Occupancy relaxation time constant (seconds)
+    N_max : Maximum room occupancy (persons)
     """
+
 
     def model(self, params, X):
         num_rec = len(X['Ta'])
+
 
         # Allocate states
         Ti  = np.zeros(num_rec)
@@ -1793,9 +1788,6 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
         c   = np.zeros(num_rec)
         N   = np.zeros(num_rec)
 
-        # Kalman filter quantities
-        # State covariance matrix P (4x4 for [Ti, Tm, c, N])
-        P = np.eye(4) * 0.1  # Initial state uncertainty
 
         # Allocate arrays for outputs
         Q_int = np.zeros(num_rec)
@@ -1803,11 +1795,13 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
         Q_solar = np.zeros(num_rec)
         N_from_CO2 = np.zeros(num_rec)  # Store steady-state estimates
 
+
         # Initial conditions
         Ti[0] = params['Ti0']
         Tm[0] = params['Tm0']
         c[0]  = params['c0']
         N[0]  = params['N0']
+
 
         # Parameters
         Ci   = params['Ci'].value
@@ -1825,105 +1819,80 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
         rho_air = params['rho_air'].value
         cp_air = params['cp_air'].value
         g = params['g'].value
-        alpha = params['alpha'].value 
-        sigma_Ti =params['sigma_Ti'].value  # °C/√h
-        sigma_Tm =params['sigma_Tm'].value  # °C/√h
-        sigma_N = params['sigma_N'].value  # persons/√h
-        tau_N = params['tau_N'].value  # Relaxation time (seconds)
-        N_max = params['N_max'].value  # Maximum occupancy (room capacity)
+        
+        # Occupancy parameters (make optional with defaults)
+        tau_N = params['tau_N'].value if 'tau_N' in params else 1800.0
+        N_max = params['N_max'].value if 'N_max' in params else 50.0
+
 
         # Inputs
         Ta     = X['Ta']
         Tsup   = X['Tsup']
         qv     = X['qv']
         Ik     = X['Ik']
-        c_meas = X['c']              # Renamed to avoid overwriting state array
+        c_meas = X['c']
+
 
         dt = self.rec_duration   
-        sqrt_dt = np.sqrt(dt)
+
 
         for k in range(1, num_rec):
-            # ==========================================
-            # PREDICTION STEP (forward simulation)
-            # ==========================================
-
             # 1) Ventilation heat (q_v in m3/h → /3600 for m3/s)
             Q_vent[k] = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
 
-            # 2) Internal gains (CO2 occupancy)
+
+            # 2) Internal gains
             Q_int_occ = (q_pers + q_equip_var) * N[k-1]
             Q_int_room = q_equip_const * S
             Q_int[k] = Q_int_occ + Q_int_room
 
+
             # 3) Solar gains
             Q_solar[k] = g * A * Ik[k-1]
 
-            # 4) Thermal state dynamics (with process noise)
-            dTi_drift = (
+
+            # 4) Thermal state dynamics (DETERMINISTIC)
+            dTi = (
                 (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
                 + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
                 + (Q_vent[k] + Q_solar[k] + Q_int[k]) / Ci
             ) * dt
-            dTi_diffusion = sigma_Ti * np.random.randn() * sqrt_dt
-            Ti[k] = Ti[k-1] + dTi_drift + dTi_diffusion
+            Ti[k] = Ti[k-1] + dTi
             
-            dTm_drift = (
+            dTm = (
                 (Ti[k-1] - Tm[k-1]) / (Rim * Cm)
             ) * dt
-            dTm_diffusion = sigma_Tm * np.random.randn() * sqrt_dt
-            Tm[k] = Tm[k-1] + dTm_drift + dTm_diffusion
+            Tm[k] = Tm[k-1] + dTm
 
-            # 5) Occupancy dynamics with CO2-based update
-            # Compute steady-state occupancy from measured CO2
+
+            # 5) Occupancy from measured CO2 with relaxation dynamics
             if qv[k] > 0 and G > 0:
                 N_from_CO2[k] = max(0, (qv[k] / (G * 1e6)) * (c_meas[k] - c_out))
             else:
                 N_from_CO2[k] = 0
             
-            # Relaxation dynamics: N tends toward N_from_CO2
-            dN_drift = (N_from_CO2[k] - N[k-1]) / tau_N * dt
-            dN_diffusion = sigma_N * np.random.randn() * sqrt_dt
-            N[k] = max(0, N[k-1] + dN_drift + dN_diffusion)
+            # Relaxation dynamics: N tends toward N_from_CO2 (DETERMINISTIC)
+            dN = (N_from_CO2[k] - N[k-1]) / tau_N * dt
+            N[k] = max(0, min(N[k-1] + dN, N_max))
             
-            # Bound N to physical limits (room capacity)
-            N[k] = min(N[k], N_max)
             
             # 6) CO2 dynamics (forward model for validation)
             if qv[k-1] > 0:
-                dc_drift = (
+                dc = (
                     1e6 * (G / V) * N[k]
                     - qv[k-1] / V * (c[k-1] - c_out)
                 ) * dt
-                c[k] = c[k-1] + dc_drift
+                c[k] = c[k-1] + dc
             else:
                 # No ventilation - pure accumulation
                 c[k] = c[k-1] + 1e6 * (G / V) * N[k] * dt
 
-            # ==========================================
-            # KALMAN UPDATE STEP (measurement correction)
-            # ==========================================
-            
-            # Simplified Kalman update for N using CO2 measurement
-            # Innovation (measurement residual)
-            c_predicted = c[k]
-            innovation_c = c_meas[k] - c_predicted
-            
-            # Kalman gain (simplified - full EKF would compute from P matrix)
-            # Higher gain = trust measurements more
-            K_c = 0.3  # Tunable between 0 (trust model) and 1 (trust measurement)
-            
-            # Update N based on CO2 innovation
-            # If measured CO2 > predicted, increase N
-            # Sensitivity: how much does c change per person?
-            dc_dN = 1e6 * (G / V) * dt if qv[k] > 0 else 1e6 * (G / V) * dt
-            if abs(dc_dN) > 1e-6:
-                N_correction = K_c * innovation_c / dc_dN
-                N[k] = max(0, N[k] + N_correction)
 
-        # Set initial values for Q_int, Q_vent, Q_solar (optional: repeat first computed value)
-        Q_int[0] = Q_int[1]
-        Q_vent[0] = Q_vent[1]
-        Q_solar[0] = Q_solar[1]
+        # Set initial values for Q_int, Q_vent, Q_solar
+        Q_int[0] = Q_int[1] if num_rec > 1 else 0
+        Q_vent[0] = Q_vent[1] if num_rec > 1 else 0
+        Q_solar[0] = Q_solar[1] if num_rec > 1 else 0
+
 
         return DarkGreyModelResult(
             Ti, X, params,
