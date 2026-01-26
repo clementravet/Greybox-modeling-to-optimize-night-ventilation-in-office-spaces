@@ -1905,8 +1905,11 @@ class TiTmCn2R2C_summer_V5(DarkGreyModel):
 
 
             # 6) Model CO2 for validation using updated N
-            dc = (1e6 * (G / V) * N[k] - qv[k-1] / V * (c[k-1] - c_out)) * dt
-            c[k] = c[k-1] + dc
+            #dc = (1e6 * (G / V) * N[k] - qv[k-1] / V * (c[k-1] - c_out)) * dt
+            #c[k] = c[k-1] + dc
+
+            # Store measured CO2:
+            c[k] = c_meas[k]
 
 
         # Set initial values for Q_int, Q_vent, Q_solar
