@@ -1392,19 +1392,17 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
             Ti[k] = Ti[k-1] + dTi
             Tm[k] = Tm[k-1] + dTm
 
-            # 5) CO2-occupancy (c in ppm)
-            dc = (
-                1e6 * (G / V) * N[k-1]                   # Source: ppm/h
-                - qv[k-1] / V * (c[k-1] - c_out)         # Sink: ppm/h
-            ) * dt   
+            # 5) CO2-occupancy (c in ppm) with dynamic N update
+            # CORRECT - uses measured CO2
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
 
+            # Then update N state
+            dN = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+            # Finally, model c for validation
+            dc = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
             c[k] = c[k-1] + dc
-
-            # N from CO2 (steady-state, using updated c[k])
-            N_from_CO2 = qv[k-1] * (c[k] - c_out) / (G * 1e6)  # persons (steady-state inversion)
-
-            # Dynamic N update: EMA filter (alpha=0.1 tunes responsiveness; adjust 0.05-0.2)
-            N[k] = (1 - alpha) * N[k-1] + alpha * N_from_CO2
 
         # Set initial values for Q_int, Q_vent, Q_solar (optional: repeat first computed value)
         Q_int[0] = Q_int[1]
@@ -1561,19 +1559,17 @@ class TiTmCn2R2C_summer_V3(DarkGreyModel):
             Ti[k] = Ti[k-1] + dTi
             Tm[k] = Tm[k-1] + dTm
 
-            # 5) CO2-occupancy (c in ppm)
-            dc = (
-                1e6 * (G / V) * N[k-1]                   # Source: ppm/h
-                - qv[k-1] / V * (c[k-1] - c_out)         # Sink: ppm/h
-            ) * dt   
+            # 5) CO2-occupancy (c in ppm) with dynamic N update
+            # CORRECT - uses measured CO2
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
 
+            # Then update N state
+            dN = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+            # Finally, model c for validation
+            dc = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
             c[k] = c[k-1] + dc
-
-            # N from CO2 (steady-state, using updated c[k])
-            N_from_CO2 = qv[k-1] * (c[k] - c_out) / (G * 1e6)  # persons (steady-state inversion)
-
-            # Dynamic N update: EMA filter (alpha=0.1 tunes responsiveness; adjust 0.05-0.2)
-            N[k] = (1 - alpha) * N[k-1] + alpha * N_from_CO2
 
         # Set initial values for Q_int, Q_vent, Q_solar (optional: repeat first computed value)
         Q_int[0] = Q_int[1]
@@ -1713,16 +1709,17 @@ class TiTmCn2R2C_summer_V4(DarkGreyModel):
             Ti[k] = Ti[k-1] + dTi
             Tm[k] = Tm[k-1] + dTm
 
-            # 5) CO2-occupancy
-            dc = (
-                1e6 * (G / V) * N[k-1]
-                - qv[k-1] / V * (c[k-1] - c_out)
-            ) * dt
+            # 5) CO2-occupancy (c in ppm) with dynamic N update
+            # CORRECT - uses measured CO2
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
 
+            # Then update N state
+            dN = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+            # Finally, model c for validation
+            dc = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
             c[k] = c[k-1] + dc
-
-            N_from_CO2 = qv[k-1] * (c[k] - c_out) / (G * 1e6)
-            N[k] = (1 - alpha) * N[k-1] + alpha * N_from_CO2
 
         Q_int[0] = Q_int[1]
         Q_vent[0] = Q_vent[1]
