@@ -1638,7 +1638,7 @@ class TiTmCn2R2C_summer_V4(DarkGreyModel):
         # NEW: Extract B-spline coefficients instead of single 'g'
         # Count how many phi parameters are defined
         n_bsplines = sum(1 for key in params.keys() if key.startswith('phi_'))
-        phi = np.array([params[f'phi_{i}'].value for i in range(n_bsplines)])
+        phi = np.array([params[f'phi_{i}'].value for i in range(1, n_bsplines + 1)])  # Start from 1, not 0
 
         # Inputs
         Ta     = X['Ta']
