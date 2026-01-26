@@ -1436,3 +1436,171 @@ class TiTmCn2R2C_summer_V2(DarkGreyModel):
         )
 
 
+class TiTmCn2R2C_summer_V3(DarkGreyModel):
+    """
+    Grey-box model of one room with:
+      - 3R2C thermal model (Ti, Tm)
+      - Ventilation via q_v (m3/h), solar and internal gains
+      - CO2-based grey-box occupancy sub-model (c in ppm)
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Tm  : Lumped thermal mass temperature (°C)
+    c   : Indoor CO2 concentration (ppm)
+    N   : Effective occupancy (persons)
+
+    Inputs X
+    --------
+    Ta      : Ambient temperature (°C)
+    Tsup    : Supply air temperature for ventilation (°C)
+    qv      : Ventilation flow rate (m3/h)
+    Ik      : Irradiance (W/m²)
+    c       : CO2 concentration (ppm) [measured]
+    theta_z : solar zenith angle (degrees)
+    gamma_s : solar azimuth angle (degrees)
+
+    Parameters (params)
+    ------------------
+    Ti0, Tm0, c0, N0 : Initial states
+    Ci  : Air + light capacitance (J/K)
+    Cm  : Thermal mass capacitance (J/K)
+    Rim : Resistance Ti-Tm (K/W)
+    Rout: Resistance Ti-Ta (K/W)
+    rho_air, cp_air: Air density (kg/m3), specific heat of air (J/kgK)
+    V     : Room volume (m³)
+    S     : Room surface (m²)
+    A     : Window area (m²)
+    G     : CO2 emission/person (m³/h/person)
+    c_out : Outdoor CO2 fraction (ppm)
+    q_pers, q_equip_var : Gains/person (W/person)
+    q_equip_const : Constant gains (W/m²)
+    g : total solar energy transmittance of the glazing 
+    alpha : EMA filter parameter for occupancy update
+    gamma_g : gamma from the glazing (degrees)
+    n : refractive index for IAM calculation
+    K : absorption coefficient for IAM calculation (1/m)
+    L : glazing thickness for IAM calculation (m)
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states
+        Ti  = np.zeros(num_rec)
+        Tm  = np.zeros(num_rec)
+        c   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+
+        # Allocate arrays for outputs
+        Q_int = np.zeros(num_rec)
+        Q_vent = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # Parameters
+        Ci   = params['Ci'].value
+        Cm   = params['Cm'].value
+        Rim  = params['Rim'].value
+        Rout = params['Rout'].value
+        q_pers = params['q_pers'].value
+        q_equip_var = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V = params['V'].value
+        S = params['S'].value
+        A = params['A'].value
+        G = params['G'].value
+        c_out = params['c_out'].value
+        rho_air = params['rho_air'].value
+        cp_air = params['cp_air'].value
+        g = params['g'].value
+        alpha = params['alpha'].value 
+        gamma_g = params['gamma_g'].value
+        n = params['n'].value
+        K = params['K'].value
+        L = params['L'].value
+
+        # Inputs
+        Ta     = X['Ta']
+        Tsup   = X['Tsup']
+        qv     = X['qv']
+        Ik     = X['Ik']
+        c_meas = X['c']              # Renamed to avoid overwriting state array
+        theta_z = X['theta_z']  
+        gamma_s = X['gamma_s']  
+
+        dt = self.rec_duration  
+
+        # Pre-compute OUTSIDE the loop
+        theta_z_array = 90 - np.array(theta_z)  # Solar zenith angle
+        gamma_s_array = np.array(gamma_s)  # Solar azimuth angle
+        # Calculate angle of incidence using pvlib (correct formula)
+        aoi_deg_all = pvlib.irradiance.aoi(
+            surface_tilt=90,          # 90° for vertical surface, 0° for horizontal
+            surface_azimuth=gamma_g,  # Surface orientation (your gamma_g)
+            solar_zenith=theta_z_array,
+            solar_azimuth=gamma_s_array
+        )
+        # Apply physical IAM model
+        iam_all = pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L)
+
+        for k in range(1, num_rec):
+            # 1) Ventilation heat (q_v in m3/h → /3600 for m3/s)
+            Q_vent[k] = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
+
+            # 2) Internal gains (CO2 occupancy)
+            Q_int_occ = (q_pers + q_equip_var) * N[k-1]
+            Q_int_room = q_equip_const * S
+            Q_int[k] = Q_int_occ + Q_int_room
+
+            # 3) Solar gains
+            #alpha_deg = np.clip(theta_z[k-1], 0, 90)  # Elevation → altitude
+            #delta_gamma_deg = gamma_s[k-1] - gamma_g     
+            #cos_theta = np.cos(np.radians(alpha_deg)) * np.cos(np.radians(delta_gamma_deg))
+            #aoi_deg = np.degrees(np.arccos(np.clip(cos_theta, 0, 1)))  # cos_theta >=0 only!
+            #iam = pvlib.iam.physical(aoi_deg, n=n, K=K, L=L)
+            Q_solar[k] = g * iam_all[k-1] * A * Ik[k-1]
+
+            # 4) Thermal states
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)     # Mass→air  
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
+                + (Q_vent[k] + Q_solar[k] + Q_int[k]) / Ci     # Gains
+            ) * dt
+
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)     # Air↔mass
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+            # 5) CO2-occupancy (c in ppm)
+            dc = (
+                1e6 * (G / V) * N[k-1]                   # Source: ppm/h
+                - qv[k-1] / V * (c[k-1] - c_out)         # Sink: ppm/h
+            ) * dt   
+
+            c[k] = c[k-1] + dc
+
+            # N from CO2 (steady-state, using updated c[k])
+            N_from_CO2 = qv[k-1] * (c[k] - c_out) / (G * 1e6)  # persons (steady-state inversion)
+
+            # Dynamic N update: EMA filter (alpha=0.1 tunes responsiveness; adjust 0.05-0.2)
+            N[k] = (1 - alpha) * N[k-1] + alpha * N_from_CO2
+
+        # Set initial values for Q_int, Q_vent, Q_solar (optional: repeat first computed value)
+        Q_int[0] = Q_int[1]
+        Q_vent[0] = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar}
+        )
+
