@@ -2245,13 +2245,12 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
             dTi = (
                 (Tm[k-1] - Ti[k-1]) / (Rim * Ci)     # Mass→air  
                 + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
-                + (Q_vent[k] + Q_solar[k] + Q_int[k]) / Ci     # Gains
+                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci     # Gains
             ) * dt
 
 
             dTm = (
                 (Ti[k-1] - Tm[k-1]) / (Rim * Cm)     # Air↔mass
-                + Q_heat[k] / Cm                      # Radiator heat
             ) * dt
 
 
