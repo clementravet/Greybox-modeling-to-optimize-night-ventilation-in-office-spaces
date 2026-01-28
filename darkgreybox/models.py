@@ -2215,7 +2215,8 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
         for k in range(1, num_rec):
             # 1) Radiator heat - direct calculation (no state dynamics)
             #Q_heat[k] = alpha_rad * (MVV[k-1]/100) * (Tfor[k-1] - Ti[k-1])
-            Q_heat[k] = alpha_rad * (MVV[k-1]/100) * 35.0
+            #Q_heat[k] = alpha_rad * (MVV[k-1]/100) * 35.0
+            Q_heat[k] = alpha_rad * ((MVV[k-1]/100)**1.2) * (Tfor[k-1] - Ti[k-1])
 
 
             # 2) Ventilation heat (q_v in m3/h → /3600 for m3/s)
