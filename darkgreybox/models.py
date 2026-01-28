@@ -2108,8 +2108,8 @@ class TiTmCn2R2C_summer_V6(DarkGreyModel):
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
     """
     Grey-box model of one room with:
-      - 3R2C thermal model (Ti, Tm) + radiator heat
-      - Water radiator driven by MVV and supply temperature (x_v state)
+      - 3R2C thermal model (Ti, Tm) + radiator thermal state (T_h)
+      - Water radiator with thermal mass driven by MVV and supply temperature
       - Ventilation via q_v (m3/h), solar and internal gains
       - CO2-based grey-box occupancy sub-model (c in ppm)
 
@@ -2118,7 +2118,7 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
     ------
     Ti  : Indoor air temperature (°C)
     Tm  : Lumped thermal mass temperature (°C)
-    x_v : Effective valve / flow opening (0–1)
+    Th : Radiator surface temperature (°C)
     c   : Indoor CO2 concentration (ppm)
     N   : Effective occupancy (persons)
 
@@ -2136,9 +2136,10 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
 
     Parameters (params)
     ------------------
-    Ti0, Tm0, xv0, c0, N0 : Initial states
+    Ti0, Tm0, Th0, c0, N0 : Initial states
     Ci  : Air + light capacitance (J/K)
     Cm  : Thermal mass capacitance (J/K)
+    Ch  : Radiator heat capacitance (J/K)
     Rim : Resistance Ti-Tm (K/W)
     Rout: Resistance Ti-Ta (K/W)
     rho_air, cp_air: Air density (kg/m3), specific heat of air (J/kgK)
@@ -2151,8 +2152,8 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
     q_equip_const : Constant gains (W/m²)
     g : total solar energy transmittance of the glazing 
     alpha : EMA filter parameter for occupancy update
-    alpha_rad : Effective radiator gain (size x typical flow rate) [W/K]
-    tau_v : Valve time constant (s)
+    alpha_in : Water-to-radiator heat transfer coefficient [W/K]
+    alpha_rad : Radiator-to-air heat transfer coefficient [W/K]
     """
 
 
@@ -2163,7 +2164,7 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
         # Allocate states
         Ti  = np.zeros(num_rec)
         Tm  = np.zeros(num_rec)
-        xv  = np.zeros(num_rec)
+        Th  = np.zeros(num_rec)  # Radiator temperature
         c   = np.zeros(num_rec)
         N   = np.zeros(num_rec)
 
@@ -2173,12 +2174,13 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
         Q_vent = np.zeros(num_rec)
         Q_solar = np.zeros(num_rec)
         Q_heat = np.zeros(num_rec)
+        Q_in = np.zeros(num_rec)  # Heat into radiator from water
 
 
         # Initial conditions
         Ti[0] = params['Ti0']
         Tm[0] = params['Tm0']
-        xv[0] = params['xv0']
+        Th[0] = params['Th0']  # Initial radiator temperature
         c[0]  = params['c0']
         N[0]  = params['N0']
 
@@ -2186,6 +2188,7 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
         # Parameters
         Ci   = params['Ci'].value
         Cm   = params['Cm'].value
+        Ch   = params['Ch'].value  # Radiator capacitance
         Rim  = params['Rim'].value
         Rout = params['Rout'].value
         q_pers = params['q_pers'].value
@@ -2200,8 +2203,8 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
         cp_air = params['cp_air'].value
         g = params['g'].value
         alpha = params['alpha'].value 
-        alpha_rad = params['alpha_rad'].value
-        tau_v = params['tau_v'].value
+        alpha_in = params['alpha_in'].value    # Water → radiator
+        alpha_rad = params['alpha_rad'].value  # Radiator → air
 
 
         # Inputs
@@ -2211,41 +2214,45 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
         qv     = X['qv']
         Ik     = X['Ik']
         MVV    = X['MVV']
-        c_meas = X['c']              # Renamed to avoid overwriting state array
+        c_meas = X['c']
 
 
         dt = self.rec_duration   
 
 
         for k in range(1, num_rec):
-            # 1) Valve / flow state: dx_v/dt = (1/tau_v) * (MVV/100 - x_v)
-            f_MVV = MVV[k-1] / 100.0
-            dxv = (f_MVV - xv[k-1]) / tau_v * dt
-            xv[k] = xv[k-1] + dxv
+            # 1) Heat from water circuit into radiator
+            Q_in[k] = alpha_in * (MVV[k-1]/100) * (Tfor[k-1] - Th[k-1])
 
 
-            # 2) Radiator heat: Q_heat = alpha_rad * x_v * (Tfor - Ti)
-            Q_heat[k] = alpha_rad * xv[k-1] * (Tfor[k-1] - Ti[k-1])
+            # 2) Heat from radiator to room air
+            Q_heat[k] = alpha_rad * (Th[k-1] - Ti[k-1])
 
 
-            # 3) Ventilation heat (q_v in m3/h → /3600 for m3/s)
+            # 3) Radiator temperature dynamics
+            dTh = (Q_in[k] - Q_heat[k]) / Ch * dt
+            Th[k] = Th[k-1] + dTh
+
+
+            # 4) Ventilation heat (q_v in m3/h → /3600 for m3/s)
             Q_vent[k] = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
 
 
-            # 4) Internal gains (CO2 occupancy)
+            # 5) Internal gains (CO2 occupancy)
             Q_int_occ = (q_pers + q_equip_var) * N[k-1]
             Q_int_room = q_equip_const * S
             Q_int[k] = Q_int_occ + Q_int_room
 
 
-            # 5) Solar gains
+            # 6) Solar gains
             Q_solar[k] = g * A * Ik[k-1]
 
-            # 6) Thermal states
+
+            # 7) Thermal states
             dTi = (
                 (Tm[k-1] - Ti[k-1]) / (Rim * Ci)     # Mass→air  
                 + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
-                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci     # Gains
+                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci  # All gains
             ) * dt
 
 
@@ -2258,28 +2265,31 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
             Tm[k] = Tm[k-1] + dTm
 
 
-            # 7) CO2-occupancy (c in ppm) with dynamic N update
+            # 8) CO2-occupancy (c in ppm) with dynamic N update
             N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
 
 
-            # Then update N state
+            # Update N state
             dN = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
             N[k] = max(0, N[k-1] + dN)
 
 
-            # Finally, model c for validation
+            # Model c for validation
             dc = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
             c[k] = c[k-1] + dc
 
 
-        # Set initial values for Q_int, Q_vent, Q_solar, Q_heat (optional: repeat first computed value)
+        # Set initial values for outputs
         Q_int[0] = Q_int[1]
         Q_vent[0] = Q_vent[1]
         Q_solar[0] = Q_solar[1]
         Q_heat[0] = Q_heat[1]
+        Q_in[0] = Q_in[1]
 
 
         return DarkGreyModelResult(
             Ti, X, params,
-            {'Ti': Ti, 'Tm': Tm, 'xv': xv, 'c': c, 'N': N, 'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar, 'Q_heat': Q_heat}
+            {'Ti': Ti, 'Tm': Tm, 'Th': Th, 'c': c, 'N': N, 
+             'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar, 
+             'Q_heat': Q_heat, 'Q_in': Q_in}
         )
