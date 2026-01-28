@@ -2215,7 +2215,7 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
         for k in range(1, num_rec):
             # 1) Radiator heat - direct calculation (no state dynamics)
             #Q_heat[k] = alpha_rad * (MVV[k-1]/100) * (Tfor[k-1] - Ti[k-1])
-            Q_heat[k] = alpha_rad * (MVV[k-1]/100) * (Tfor[k-1] - Tm[k-1])
+            Q_heat[k] = alpha_rad * (MVV[k-1]/100) * 35.0
 
 
             # 2) Ventilation heat (q_v in m3/h → /3600 for m3/s)
@@ -2233,22 +2233,16 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
 
 
             # 5) Thermal states
-            #dTi = (
-            #    (Tm[k-1] - Ti[k-1]) / (Rim * Ci)       # Mass→air  
-            #    + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
-            #    + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci  # All gains
-            #) * dt
             dTi = (
                 (Tm[k-1] - Ti[k-1]) / (Rim * Ci)       # Mass→air  
                 + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
-                + (Q_vent[k] + Q_solar[k] + Q_int[k]) / Ci  # All gains
+                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci  # All gains
             ) * dt
 
 
-            #dTm = (
-            #    (Ti[k-1] - Tm[k-1]) / (Rim * Cm)       # Air↔mass
-            #) * dt
-            dTm = ((Ti[k-1] - Tm[k-1]) / (Rim * Cm) + Q_heat[k] / Cm) * dt
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)       # Air↔mass
+            ) * dt
 
 
             Ti[k] = Ti[k-1] + dTi
