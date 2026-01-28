@@ -2103,3 +2103,184 @@ class TiTmCn2R2C_summer_V6(DarkGreyModel):
             Ti, X, params,
             {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar}
         )
+    
+
+class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
+    """
+    Grey-box model of one room with:
+      - 3R2C thermal model (Ti, Tm) + radiator heat
+      - Water radiator driven by MVV and supply temperature (x_v state)
+      - Ventilation via q_v (m3/h), solar and internal gains
+      - CO2-based grey-box occupancy sub-model (c in ppm)
+
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Tm  : Lumped thermal mass temperature (°C)
+    x_v : Effective valve / flow opening (0–1)
+    c   : Indoor CO2 concentration (ppm)
+    N   : Effective occupancy (persons)
+
+
+    Inputs X
+    --------
+    Ta      : Ambient temperature (°C)
+    Tsup    : Supply air temperature for ventilation (°C)
+    Tfor    : Supply water temperature to radiator circuit (°C)
+    qv      : Ventilation flow rate (m3/h)
+    Ik      : Irradiance (W/m²)
+    MVV     : Heating command (%) for radiator
+    c       : CO2 concentration (ppm) [measured]
+
+
+    Parameters (params)
+    ------------------
+    Ti0, Tm0, xv0, c0, N0 : Initial states
+    Ci  : Air + light capacitance (J/K)
+    Cm  : Thermal mass capacitance (J/K)
+    Rim : Resistance Ti-Tm (K/W)
+    Rout: Resistance Ti-Ta (K/W)
+    rho_air, cp_air: Air density (kg/m3), specific heat of air (J/kgK)
+    V     : Room volume (m³)
+    S     : Room surface (m²)
+    A     : Window area (m²)
+    G     : CO2 emission/person (m³/h/person)
+    c_out : Outdoor CO2 fraction (ppm)
+    q_pers, q_equip_var : Gains/person (W/person)
+    q_equip_const : Constant gains (W/m²)
+    g : total solar energy transmittance of the glazing 
+    alpha : EMA filter parameter for occupancy update
+    alpha_rad : Effective radiator gain (size x typical flow rate) [W/K]
+    tau_v : Valve time constant (s)
+    """
+
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+
+        # Allocate states
+        Ti  = np.zeros(num_rec)
+        Tm  = np.zeros(num_rec)
+        xv  = np.zeros(num_rec)
+        c   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+
+
+        # Allocate arrays for outputs
+        Q_int = np.zeros(num_rec)
+        Q_vent = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+        Q_heat = np.zeros(num_rec)
+
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        xv[0] = params['xv0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+
+        # Parameters
+        Ci   = params['Ci'].value
+        Cm   = params['Cm'].value
+        Rim  = params['Rim'].value
+        Rout = params['Rout'].value
+        q_pers = params['q_pers'].value
+        q_equip_var = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V = params['V'].value
+        S = params['S'].value
+        A = params['A'].value
+        G = params['G'].value
+        c_out = params['c_out'].value
+        rho_air = params['rho_air'].value
+        cp_air = params['cp_air'].value
+        g = params['g'].value
+        alpha = params['alpha'].value 
+        alpha_rad = params['alpha_rad'].value
+        tau_v = params['tau_v'].value
+
+
+        # Inputs
+        Ta     = X['Ta']
+        Tsup   = X['Tsup']
+        Tfor   = X['Tfor']
+        qv     = X['qv']
+        Ik     = X['Ik']
+        MVV    = X['MVV']
+        c_meas = X['c']              # Renamed to avoid overwriting state array
+
+
+        dt = self.rec_duration   
+
+
+        for k in range(1, num_rec):
+            # 1) Valve / flow state: dx_v/dt = (1/tau_v) * (MVV/100 - x_v)
+            f_MVV = MVV[k-1] / 100.0
+            dxv = (f_MVV - xv[k-1]) / tau_v * dt
+            xv[k] = xv[k-1] + dxv
+
+
+            # 2) Radiator heat: Q_heat = alpha_rad * x_v * (Tfor - Tm)
+            Q_heat[k] = alpha_rad * xv[k-1] * (Tfor[k-1] - Tm[k-1])
+
+
+            # 3) Ventilation heat (q_v in m3/h → /3600 for m3/s)
+            Q_vent[k] = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
+
+
+            # 4) Internal gains (CO2 occupancy)
+            Q_int_occ = (q_pers + q_equip_var) * N[k-1]
+            Q_int_room = q_equip_const * S
+            Q_int[k] = Q_int_occ + Q_int_room
+
+
+            # 5) Solar gains
+            Q_solar[k] = g * A * Ik[k-1]
+
+            # 6) Thermal states
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)     # Mass→air  
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
+                + (Q_vent[k] + Q_solar[k] + Q_int[k]) / Ci     # Gains
+            ) * dt
+
+
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)     # Air↔mass
+                + Q_heat[k] / Cm                      # Radiator heat
+            ) * dt
+
+
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+
+            # 7) CO2-occupancy (c in ppm) with dynamic N update
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
+
+
+            # Then update N state
+            dN = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+
+            # Finally, model c for validation
+            dc = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
+            c[k] = c[k-1] + dc
+
+
+        # Set initial values for Q_int, Q_vent, Q_solar, Q_heat (optional: repeat first computed value)
+        Q_int[0] = Q_int[1]
+        Q_vent[0] = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+        Q_heat[0] = Q_heat[1]
+
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'xv': xv, 'c': c, 'N': N, 'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar, 'Q_heat': Q_heat}
+        )
