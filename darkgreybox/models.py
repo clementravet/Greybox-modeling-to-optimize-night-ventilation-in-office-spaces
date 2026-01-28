@@ -2170,7 +2170,7 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
         Q_vent = np.zeros(num_rec)
         Q_solar = np.zeros(num_rec)
         Q_heat = np.zeros(num_rec)
-        Q_inf = np.zeros(num_rec)
+        #Q_inf = np.zeros(num_rec)
 
 
         # Initial conditions
@@ -2198,7 +2198,7 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
         g = params['g'].value
         alpha = params['alpha'].value 
         alpha_rad = params['alpha_rad'].value
-        q_inf = params['q_inf'].value  # Infiltration rate (air changes per hour)
+        #q_inf = params['q_inf'].value  # Infiltration rate (air changes per hour)
 
 
         # Inputs
@@ -2222,7 +2222,7 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
             #Q_heat[k] = alpha_rad * MVV_eff * (Tfor[k-1] - Ti[k-1])
 
             # Infiltration:
-            Q_inf[k] = q_inf * rho_air * cp_air * (V/3600) * (Ta[k-1] - Ti[k-1])
+            #Q_inf[k] = q_inf * rho_air * cp_air * (V/3600) * (Ta[k-1] - Ti[k-1])
 
 
             # 2) Ventilation heat (q_v in m3/h → /3600 for m3/s)
@@ -2243,7 +2243,7 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
             dTi = (
                 (Tm[k-1] - Ti[k-1]) / (Rim * Ci)       # Mass→air  
                 + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
-                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k] + Q_inf[k]) / Ci  # All gains
+                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci  # All gains
             ) * dt
 
 
