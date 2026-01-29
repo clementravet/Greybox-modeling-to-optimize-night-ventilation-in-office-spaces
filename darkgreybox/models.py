@@ -2282,3 +2282,134 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
             {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 
              'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar, 'Q_heat': Q_heat}
         )
+
+
+class TiTmThPhiCn2R2C_winter_V3(DarkGreyModel):
+    """
+    [Keep same docstring]
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states (6 states: Ti, Tm, Th, Phi, c, N)
+        Ti  = np.zeros(num_rec)
+        Tm  = np.zeros(num_rec)
+        Th  = np.zeros(num_rec)  # Radiator temperature (hidden state)
+        Phi = np.zeros(num_rec)  # Water flow rate
+        c   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+
+        # Allocate arrays for outputs
+        Q_int = np.zeros(num_rec)
+        Q_vent = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+        Q_heat = np.zeros(num_rec)
+        Tret = np.zeros(num_rec)  # Return water temperature
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        Th[0] = params['Th0']
+        Phi[0] = params['Phi0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # Parameters
+        Ci   = params['Ci'].value
+        Cm   = params['Cm'].value
+        Ch   = params['Ch'].value
+        Rim  = params['Rim'].value
+        Rout = params['Rout'].value
+        Rfr  = params['Rfr'].value  # Flow-radiator thermal resistance
+        Phi_max = params['Phi_max'].value
+        Cf   = params['Cf'].value
+        cp_w = params['cp_w'].value
+        q_pers = params['q_pers'].value
+        q_equip_var = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V = params['V'].value
+        S = params['S'].value
+        A = params['A'].value
+        G = params['G'].value
+        c_out = params['c_out'].value
+        rho_air = params['rho_air'].value
+        cp_air = params['cp_air'].value
+        g = params['g'].value
+        alpha = params['alpha'].value
+
+        # Inputs
+        Ta     = X['Ta']
+        Tsup   = X['Tsup']
+        Tfor   = X['Tfor']
+        qv     = X['qv']
+        Ik     = X['Ik']
+        MVV    = X['MVV']
+        c_meas = X['c']
+
+        dt = self.rec_duration
+
+        for k in range(1, num_rec):
+            # 1) Water flow dynamics: dΦ/dt = (1/Cf) * (Φ_max * MVV - Φ)
+            dPhi = (1.0 / Cf) * (Phi_max * (MVV[k-1]/100) - Phi[k-1]) * dt
+            Phi[k] = max(1e-6, Phi[k-1] + dPhi)  # Small minimum to avoid division by zero
+
+            # 2) Radiator temperature dynamics
+            # Heat from water: (Tfor - Th) / Rfr
+            # Heat to air: (Th - Ti) / Rrh  (but Rrh = Rfr in this formulation)
+            dTh = (1.0 / Ch) * ((Tfor[k-1] - Th[k-1]) / Rfr - (Th[k-1] - Ti[k-1]) / Rfr) * dt
+            Th[k] = Th[k-1] + dTh
+            
+            # 3) Return water temperature (from energy balance)
+            # Tret = Th + (Th - Ti) / (Phi * cp_w * Rfr)
+            # Simplified: use equation from paper
+            Tret[k] = Th[k-1] - ((Th[k-1] - Ti[k-1]) / Rfr) / (Phi[k-1] * cp_w)
+            
+            # 4) Heat delivered by radiator system: Q = Phi * cp_w * (Tfor - Tret)
+            Q_heat[k] = Phi[k-1] * cp_w * (Tfor[k-1] - Tret[k])
+
+            # 5) Ventilation heat (q_v in m3/h → /3600 for m3/s)
+            Q_vent[k] = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
+
+            # 6) Internal gains (CO2 occupancy)
+            Q_int_occ = (q_pers + q_equip_var) * N[k-1]
+            Q_int_room = q_equip_const * S
+            Q_int[k] = Q_int_occ + Q_int_room
+
+            # 7) Solar gains
+            Q_solar[k] = g * A * Ik[k-1]
+
+            # 8) Indoor air temperature dynamics
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+
+            # 9) Thermal mass temperature dynamics
+            dTm = ((Ti[k-1] - Tm[k-1]) / (Rim * Cm)) * dt
+            Tm[k] = Tm[k-1] + dTm
+
+            # 10) CO2-occupancy (c in ppm) with dynamic N update
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
+            dN = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+            dc = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
+            c[k] = c[k-1] + dc
+
+        # Set initial values for outputs
+        Q_int[0] = Q_int[1]
+        Q_vent[0] = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+        Q_heat[0] = Q_heat[1]
+        Tret[0] = Tret[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'Th': Th, 'Phi': Phi, 'c': c, 'N': N, 
+             'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar, 
+             'Q_heat': Q_heat, 'Tret': Tret}
+        )
