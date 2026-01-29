@@ -2286,7 +2286,55 @@ class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
 
 class TiTmThPhiCn2R2C_winter_V3(DarkGreyModel):
     """
-    [Keep same docstring]
+    Grey-box model of one room with:
+      - 3R2C thermal model (Ti, Tm) + radiator dynamics (T_h, Φ)
+      - Radiator with thermal mass and water flow dynamics
+      - Ventilation via q_v (m3/h), solar and internal gains
+      - CO2-based grey-box occupancy sub-model (c in ppm)
+    
+    Based on: https://www.sciencedirect.com/science/article/pii/S0378778821007416
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Tm  : Lumped thermal mass temperature (°C)
+    T_h : Radiator surface temperature (°C)
+    Phi : Water flow rate through radiator (kg/s)
+    c   : Indoor CO2 concentration (ppm)
+    N   : Effective occupancy (persons)
+
+    Inputs X
+    --------
+    Ta      : Ambient temperature (°C)
+    Tsup    : Supply air temperature for ventilation (°C)
+    Tfor    : Supply water temperature to radiator circuit (°C)
+    qv      : Ventilation flow rate (m3/h)
+    Ik      : Irradiance (W/m²)
+    MVV     : Heating command (%) for radiator
+    c       : CO2 concentration (ppm) [measured]
+
+    Parameters (params)
+    ------------------
+    Ti0, Tm0, Th0, Phi0, c0, N0 : Initial states
+    Ci  : Air + light capacitance (J/K)
+    Cm  : Thermal mass capacitance (J/K)
+    Ch  : Radiator heat capacity (J/K)
+    Rim : Resistance Ti-Tm (K/W)
+    Rout: Resistance Ti-Ta (K/W)
+    Rrh : Resistance radiator-air (K/W)
+    Phi_max : Maximum water flow rate (kg/s)
+    Cf  : Flow time constant (s)
+    cp_w : Specific heat of water (J/kg·K)
+    rho_air, cp_air: Air density (kg/m3), specific heat of air (J/kgK)
+    V     : Room volume (m³)
+    S     : Room surface (m²)
+    A     : Window area (m²)
+    G     : CO2 emission/person (m³/h/person)
+    c_out : Outdoor CO2 fraction (ppm)
+    q_pers, q_equip_var : Gains/person (W/person)
+    q_equip_const : Constant gains (W/m²)
+    g : total solar energy transmittance of the glazing 
+    alpha : EMA filter parameter for occupancy update
     """
 
     def model(self, params, X):
@@ -2295,7 +2343,7 @@ class TiTmThPhiCn2R2C_winter_V3(DarkGreyModel):
         # Allocate states (6 states: Ti, Tm, Th, Phi, c, N)
         Ti  = np.zeros(num_rec)
         Tm  = np.zeros(num_rec)
-        Th  = np.zeros(num_rec)  # Radiator temperature (hidden state)
+        Th  = np.zeros(num_rec)  # Radiator temperature
         Phi = np.zeros(num_rec)  # Water flow rate
         c   = np.zeros(num_rec)
         N   = np.zeros(num_rec)
@@ -2304,8 +2352,8 @@ class TiTmThPhiCn2R2C_winter_V3(DarkGreyModel):
         Q_int = np.zeros(num_rec)
         Q_vent = np.zeros(num_rec)
         Q_solar = np.zeros(num_rec)
-        Q_heat = np.zeros(num_rec)
-        Tret = np.zeros(num_rec)  # Return water temperature
+        Q_heat = np.zeros(num_rec)  # Heat from radiator to air
+        Q_water = np.zeros(num_rec)  # Heat from water to radiator
 
         # Initial conditions
         Ti[0] = params['Ti0']
@@ -2321,7 +2369,7 @@ class TiTmThPhiCn2R2C_winter_V3(DarkGreyModel):
         Ch   = params['Ch'].value
         Rim  = params['Rim'].value
         Rout = params['Rout'].value
-        Rfr  = params['Rfr'].value  # Flow-radiator thermal resistance
+        Rrh  = params['Rrh'].value  # Radiator-air resistance
         Phi_max = params['Phi_max'].value
         Cf   = params['Cf'].value
         cp_w = params['cp_w'].value
@@ -2352,21 +2400,17 @@ class TiTmThPhiCn2R2C_winter_V3(DarkGreyModel):
         for k in range(1, num_rec):
             # 1) Water flow dynamics: dΦ/dt = (1/Cf) * (Φ_max * MVV - Φ)
             dPhi = (1.0 / Cf) * (Phi_max * (MVV[k-1]/100) - Phi[k-1]) * dt
-            Phi[k] = max(1e-6, Phi[k-1] + dPhi)  # Small minimum to avoid division by zero
+            Phi[k] = max(0, Phi[k-1] + dPhi)  # Ensure non-negative flow
 
-            # 2) Radiator temperature dynamics
-            # Heat from water: (Tfor - Th) / Rfr
-            # Heat to air: (Th - Ti) / Rrh  (but Rrh = Rfr in this formulation)
-            dTh = (1.0 / Ch) * ((Tfor[k-1] - Th[k-1]) / Rfr - (Th[k-1] - Ti[k-1]) / Rfr) * dt
+            # 2) Heat from water to radiator: Q_water = Φ * cp_w * (Tfor - Th)
+            Q_water[k] = Phi[k-1] * cp_w * (Tfor[k-1] - Th[k-1])
+
+            # 3) Heat from radiator to air: Q_heat = (Th - Ti) / Rrh
+            Q_heat[k] = (Th[k-1] - Ti[k-1]) / Rrh
+
+            # 4) Radiator temperature dynamics: dTh/dt = (1/Ch) * (Q_water - Q_heat)
+            dTh = (Q_water[k] - Q_heat[k]) / Ch * dt
             Th[k] = Th[k-1] + dTh
-            
-            # 3) Return water temperature (from energy balance)
-            # Tret = Th + (Th - Ti) / (Phi * cp_w * Rfr)
-            # Simplified: use equation from paper
-            Tret[k] = Th[k-1] - ((Th[k-1] - Ti[k-1]) / Rfr) / (Phi[k-1] * cp_w)
-            
-            # 4) Heat delivered by radiator system: Q = Phi * cp_w * (Tfor - Tret)
-            Q_heat[k] = Phi[k-1] * cp_w * (Tfor[k-1] - Tret[k])
 
             # 5) Ventilation heat (q_v in m3/h → /3600 for m3/s)
             Q_vent[k] = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
@@ -2381,22 +2425,28 @@ class TiTmThPhiCn2R2C_winter_V3(DarkGreyModel):
 
             # 8) Indoor air temperature dynamics
             dTi = (
-                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
-                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
-                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)       # Mass→air  
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)    # Air→ambient
+                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci  # All gains
             ) * dt
 
             Ti[k] = Ti[k-1] + dTi
 
             # 9) Thermal mass temperature dynamics
-            dTm = ((Ti[k-1] - Tm[k-1]) / (Rim * Cm)) * dt
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)       # Air↔mass
+            ) * dt
+
             Tm[k] = Tm[k-1] + dTm
 
             # 10) CO2-occupancy (c in ppm) with dynamic N update
             N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
+
+            # Update N state
             dN = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
             N[k] = max(0, N[k-1] + dN)
 
+            # Model c for validation
             dc = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
             c[k] = c[k-1] + dc
 
@@ -2405,11 +2455,11 @@ class TiTmThPhiCn2R2C_winter_V3(DarkGreyModel):
         Q_vent[0] = Q_vent[1]
         Q_solar[0] = Q_solar[1]
         Q_heat[0] = Q_heat[1]
-        Tret[0] = Tret[1]
+        Q_water[0] = Q_water[1]
 
         return DarkGreyModelResult(
             Ti, X, params,
             {'Ti': Ti, 'Tm': Tm, 'Th': Th, 'Phi': Phi, 'c': c, 'N': N, 
              'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar, 
-             'Q_heat': Q_heat, 'Tret': Tret}
+             'Q_heat': Q_heat, 'Q_water': Q_water}
         )
