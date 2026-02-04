@@ -2525,7 +2525,7 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
         Tm    = np.zeros(num_rec)
         c     = np.zeros(num_rec)
         N     = np.zeros(num_rec)
-        T_ret = np.zeros(num_rec)
+        Tret = np.zeros(num_rec)
 
         # Allocate arrays for outputs
         Q_int   = np.zeros(num_rec)
@@ -2538,7 +2538,7 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
         Tm[0]    = params['Tm0']
         c[0]     = params['c0']
         N[0]     = params['N0']
-        T_ret[0] = params['T_ret0']
+        Tret[0] = params['Tret0']
 
         # Parameters
         Ci   = params['Ci'].value
@@ -2572,7 +2572,7 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
         Ik     = X['Ik']
         c_meas = X['c']
         MVV    = X['MVV']    # **RADIATOR valve, not system**
-        T_for  = X['T_for']
+        Tfor  = X['Tfor']
 
         dt = self.rec_duration
 
@@ -2598,8 +2598,8 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
                 m_dot = 0.0
             
             # 4b) Calculate LMTD
-            dT_supply = T_for[k-1] - Ti[k-1]
-            dT_return = T_ret[k-1] - Ti[k-1]
+            dT_supply = Tfor[k-1] - Ti[k-1]
+            dT_return = Tret[k-1] - Ti[k-1]
             
             if dT_supply > 0.1 and dT_return > 0.01 and dT_supply > dT_return:
                 LMTD = (dT_supply - dT_return) / np.log(dT_supply / dT_return)
@@ -2614,14 +2614,13 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
             
             # 4d) Return temperature dynamics
             if m_dot > 0.001:
-                T_ret_target = T_for[k-1] - Q_heat[k] / (m_dot * cp_water)
+                T_ret_target = Tfor[k-1] - Q_heat[k] / (m_dot * cp_water)
                 tau_ret = 60.0
-                dT_ret = ((T_ret_target - T_ret[k-1]) / tau_ret) * dt
+                dT_ret = ((T_ret_target - Tret[k-1]) / tau_ret) * dt
             else:
-                dT_ret = ((Ti[k-1] - T_ret[k-1]) / 300.0) * dt
+                dT_ret = ((Ti[k-1] - Tret[k-1]) / 300.0) * dt
             
-            T_ret[k] = T_ret[k-1] + dT_ret
-
+            Tret[k] = Tret[k-1] + dT_ret
             # 5) Thermal states
             dTi = (
                 (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
@@ -2652,7 +2651,7 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
 
         return DarkGreyModelResult(
             Ti, X, params,
-            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 'T_ret': T_ret,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 'Tret': Tret,
              'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar, 'Q_heat': Q_heat}
         )
 
@@ -2717,7 +2716,7 @@ class TiTmCn2R2C_winter_V5(DarkGreyModel):
         Tm    = np.zeros(num_rec)
         c     = np.zeros(num_rec)
         N     = np.zeros(num_rec)
-        T_ret = np.zeros(num_rec)
+        Tret = np.zeros(num_rec)
 
         # Allocate arrays for outputs
         Q_int   = np.zeros(num_rec)
@@ -2730,7 +2729,7 @@ class TiTmCn2R2C_winter_V5(DarkGreyModel):
         Tm[0]    = params['Tm0']
         c[0]     = params['c0']
         N[0]     = params['N0']
-        T_ret[0] = params['T_ret0']
+        Tret[0] = params['Tret0']
 
         # Parameters
         Ci   = params['Ci'].value
@@ -2764,7 +2763,7 @@ class TiTmCn2R2C_winter_V5(DarkGreyModel):
         Ik     = X['Ik']
         c_meas = X['c']
         MVV    = X['MVV']    # **RADIATOR valve**
-        T_for  = X['T_for']
+        Tfor  = X['Tfor']
 
         dt = self.rec_duration
 
@@ -2789,8 +2788,8 @@ class TiTmCn2R2C_winter_V5(DarkGreyModel):
                 m_dot = 0.0
             
             # 4b) Calculate LMTD
-            dT_supply = T_for[k-1] - Ti[k-1]
-            dT_return = T_ret[k-1] - Ti[k-1]
+            dT_supply = Tfor[k-1] - Ti[k-1]
+            dT_return = Tret[k-1] - Ti[k-1]
             
             if dT_supply > 0.1 and dT_return > 0.01 and dT_supply > dT_return:
                 LMTD = (dT_supply - dT_return) / np.log(dT_supply / dT_return)
@@ -2805,14 +2804,13 @@ class TiTmCn2R2C_winter_V5(DarkGreyModel):
             
             # 4d) Return temperature dynamics
             if m_dot > 0.001:
-                T_ret_target = T_for[k-1] - Q_heat[k] / (m_dot * cp_water)
+                T_ret_target = Tfor[k-1] - Q_heat[k] / (m_dot * cp_water)
                 tau_ret = 60.0
-                dT_ret = ((T_ret_target - T_ret[k-1]) / tau_ret) * dt
+                dT_ret = ((T_ret_target - Tret[k-1]) / tau_ret) * dt
             else:
-                dT_ret = ((Ti[k-1] - T_ret[k-1]) / 300.0) * dt
+                dT_ret = ((Ti[k-1] - Tret[k-1]) / 300.0) * dt
             
-            T_ret[k] = T_ret[k-1] + dT_ret
-
+            Tret[k] = Tret[k-1] + dT_ret
             # 5) Thermal states
             dTi = (
                 (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
@@ -2843,6 +2841,6 @@ class TiTmCn2R2C_winter_V5(DarkGreyModel):
 
         return DarkGreyModelResult(
             Ti, X, params,
-            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 'T_ret': T_ret,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 'Tret': Tret,
              'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar, 'Q_heat': Q_heat}
         )
