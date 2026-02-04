@@ -2465,7 +2465,7 @@ class TiTmThPhiCn2R2C_winter_V3(DarkGreyModel):
         )
 
 
-class TiTmCn2R2C_summer_V4(DarkGreyModel):
+class TiTmCn2R2C_winter_V4(DarkGreyModel):
     """
     Grey-box model of one room with:
       - 3R2C thermal model (Ti, Tm) + radiator heat transfer
@@ -2657,7 +2657,7 @@ class TiTmCn2R2C_summer_V4(DarkGreyModel):
         )
 
 
-class TiTmCn2R2C_summer_V5(DarkGreyModel):
+class TiTmCn2R2C_winter_V5(DarkGreyModel):
     """
     Grey-box model of one room with:
       - 3R2C thermal model (Ti, Tm) + radiator heat transfer
