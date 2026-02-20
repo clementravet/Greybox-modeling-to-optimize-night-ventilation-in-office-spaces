@@ -2851,7 +2851,7 @@ class TiTmCn2R2C_winter_V6(DarkGreyModel):
     Ik      : Irradiance (W/m²)
     c       : CO2 concentration (ppm) [measured]
     MVV     : Radiator valve position (0–1)
-    T_for   : Hot water supply temperature to radiator (°C)
+    Tfor   : Hot water supply temperature to radiator (°C)
 
     Parameters
     ----------
@@ -2923,7 +2923,7 @@ class TiTmCn2R2C_winter_V6(DarkGreyModel):
         Ik     = X['Ik']
         c_meas = X['c']
         MVV    = X['MVV']    # Radiator valve position (0–1)
-        T_for  = X['T_for']  # Hot water supply temperature
+        Tfor  = X['Tfor']  # Hot water supply temperature
 
         dt = self.rec_duration
 
@@ -2957,7 +2957,7 @@ class TiTmCn2R2C_winter_V6(DarkGreyModel):
             epsilon    = 1.0 - np.exp(-NTU)             # effectiveness (0–1)
 
             # 4c) Heat transfer to room
-            dT_available = max(0.0, T_for[k-1] - Ti[k-1])
+            dT_available = max(0.0, Tfor[k-1] - Ti[k-1])
             Q_heat[k] = epsilon * C_water * dT_available
             # When m_dot=0: C_water→0, epsilon→1, product→0 ✓
             # When m_dot large: epsilon→(1-e^-NTU), Q_heat→UA*LMTD ✓
