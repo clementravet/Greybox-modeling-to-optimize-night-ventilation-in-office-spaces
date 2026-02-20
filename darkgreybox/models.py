@@ -2541,7 +2541,7 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
             # 4) RADIATOR HEAT TRANSFER
             # ----------------------------------------------------------------
 
-            # 4a) Mass flow — equal-percentage + smooth ramp (unchanged)
+            # 4a) Mass flow — equal-percentage + smooth ramp
             MVV_k = np.clip(MVV[k-1], 0.0, 1.0)
             if MVV_k < 1e-6:
                 m_dot = 0.0
@@ -2551,56 +2551,43 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
                 Q_flow    = Q_flow_ep * smooth
                 m_dot     = rho_water * (Q_flow / 3600)
 
-            # 4b) LMTD — kept, with blended effective supply temperature
-            #
-            #   Instead of switching formula at MVV=0, we blend Tfor → Tret
-            #   continuously as m_dot decreases.
-            #
-            #   blend = 1 (full flow)  → Tsup_rad = Tfor   → standard LMTD
-            #   blend = 0 (no flow)    → Tsup_rad = Tret   → LMTD = dT_rad = Tret - Ti
-            #
-            #   At 10% of max flow the blend is already 1 (full LMTD),
-            #   so this only affects the transition near valve close/open.
-            #   No formula switch = no step in Q_heat at transitions.
-            m_dot_ref = rho_water * (Q_flow_max / 3600) * 0.1
-            blend     = np.clip(m_dot / m_dot_ref, 0.0, 1.0)
-            Tsup_rad  = blend * Tfor[k-1] + (1.0 - blend) * Tret[k-1]
-
-            dT_supply = Tsup_rad - Ti[k-1]
-            dT_return = Tret[k-1] - Ti[k-1]
-
-            dT_supply_eff = max(dT_supply, eps_lmtd)
-            dT_return_eff = np.clip(dT_return, eps_lmtd, dT_supply_eff - eps_lmtd)
-
-            # L'Hopital guard: when supply ≈ return, LMTD → dT arithmetically
-            if abs(dT_supply_eff - dT_return_eff) < 1e-6:
-                LMTD = dT_supply_eff
+            # 4b) LMTD + Q_heat — zero when valve closed, LMTD when open
+            if m_dot < 1e-6:
+                # Valve closed: no flow, no heat transfer
+                Q_heat[k] = 0.0
+                LMTD      = 0.0
             else:
-                LMTD = (dT_supply_eff - dT_return_eff) / np.log(dT_supply_eff / dT_return_eff)
+                dT_supply = Tfor[k-1] - Ti[k-1]
+                dT_return = Tret[k-1] - Ti[k-1]
 
-            Q_lmtd = K * (LMTD ** 1.3)
+                dT_supply_eff = max(dT_supply, eps_lmtd)
+                dT_return_eff = np.clip(dT_return, eps_lmtd, dT_supply_eff - eps_lmtd)
 
-            # 4c) Q_heat — flow cap only when valve is open (unchanged)
-            if m_dot > 1e-6:
+                if abs(dT_supply_eff - dT_return_eff) < 1e-6:
+                    LMTD = dT_supply_eff  # L'Hopital guard
+                else:
+                    LMTD = (dT_supply_eff - dT_return_eff) / np.log(dT_supply_eff / dT_return_eff)
+
+                Q_lmtd = K * (LMTD ** 1.3)
+
+                # Flow-limited cap
                 Tret_prev_eff = min(Tret[k-1], Tfor[k-1] - eps_lmtd)
                 Q_flow_limit  = m_dot * cp_water * (Tfor[k-1] - Tret_prev_eff)
                 Q_heat[k]     = min(Q_lmtd, Q_flow_limit)
-            else:
-                Q_heat[k] = Q_lmtd  # decays naturally as Tsup_rad = Tret → Ti
 
-            # 4d) T_ret dynamics (unchanged)
+            # 4c) T_ret dynamics
             if m_dot > 1e-6:
                 T_ret_target = Tfor[k-1] - Q_heat[k] / (m_dot * cp_water)
                 tau_ret      = 300.0
                 dT_ret       = ((T_ret_target - Tret[k-1]) / tau_ret) * dt
             else:
-                T_ret_floor    = Ti[k-1] + 1.0
-                tau_ret_closed = 3600.0
-                dT_ret         = ((T_ret_floor - Tret[k-1]) / tau_ret_closed) * dt
+                # Valve closed: T_ret decays toward Ti
+                dT_ret = ((Ti[k-1] - Tret[k-1]) / 300.0) * dt
 
             dT_ret  = np.clip(dT_ret, -max_dT_ret, max_dT_ret)
             Tret[k] = Tret[k-1] + dT_ret
             Tret[k] = np.clip(Tret[k], Ti[k-1] + eps_lmtd, Tfor[k-1] - eps_lmtd)
+
 
 
             # ----------------------------------------------------------------
