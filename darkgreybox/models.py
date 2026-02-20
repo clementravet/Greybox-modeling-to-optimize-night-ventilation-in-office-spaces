@@ -2551,23 +2551,28 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
                 Q_flow    = Q_flow_ep * smooth
                 m_dot     = rho_water * (Q_flow / 3600)
 
-            # 4b) LMTD — soft floor
+            # 4b) LMTD — soft floor (only meaningful when valve is open)
             dT_supply = Tfor[k-1] - Ti[k-1]
             dT_return = Tret[k-1] - Ti[k-1]
 
             dT_supply_eff = max(dT_supply, eps_lmtd)
             dT_return_eff = np.clip(dT_return, eps_lmtd, dT_supply_eff - eps_lmtd)
 
-            LMTD  = (dT_supply_eff - dT_return_eff) / np.log(dT_supply_eff / dT_return_eff)
+            LMTD   = (dT_supply_eff - dT_return_eff) / np.log(dT_supply_eff / dT_return_eff)
             Q_lmtd = K * (LMTD ** 1.3)
 
-            # 4c) Q_heat — flow-limited cap using capped T_ret (FIX 1)
+            # 4c) Q_heat
             if m_dot > 1e-6:
-                Tret_prev_eff = min(Tret[k-1], Tfor[k-1] - eps_lmtd)  # ← FIX 1
+                # Valve open: full LMTD + flow-limited cap
+                Tret_prev_eff = min(Tret[k-1], Tfor[k-1] - eps_lmtd)
                 Q_flow_limit  = m_dot * cp_water * (Tfor[k-1] - Tret_prev_eff)
                 Q_heat[k]     = min(Q_lmtd, Q_flow_limit)
             else:
-                Q_heat[k] = Q_lmtd  # residual emission when valve closed
+                # Valve closed: radiator disconnected from circuit, Tfor is irrelevant.
+                # Only the trapped water temperature (T_ret) drives residual emission.
+                # T_ret decays toward Ti via tau_ret_closed in 4d → Q_heat decays too.
+                dT_rad    = max(Tret[k-1] - Ti[k-1], 0.0)
+                Q_heat[k] = K * (dT_rad ** 1.3)
 
             # 4d) T_ret dynamics
             if m_dot > 1e-6:
@@ -2575,15 +2580,13 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
                 tau_ret      = 60.0
                 dT_ret       = ((T_ret_target - Tret[k-1]) / tau_ret) * dt
             else:
-                T_ret_floor = Ti[k-1] + 1.0
+                T_ret_floor    = Ti[k-1] + 1.0
                 tau_ret_closed = 3600.0
-                dT_ret = ((T_ret_floor - Tret[k-1]) / tau_ret_closed) * dt
+                dT_ret         = ((T_ret_floor - Tret[k-1]) / tau_ret_closed) * dt
 
             dT_ret  = np.clip(dT_ret, -max_dT_ret, max_dT_ret)
             Tret[k] = Tret[k-1] + dT_ret
-            Tret[k] = np.clip(Tret[k], Ti[k-1] + eps_lmtd, Tfor[k-1] - eps_lmtd)  # ← FIX 2
-
-
+            Tret[k] = np.clip(Tret[k], Ti[k-1] + eps_lmtd, Tfor[k-1] - eps_lmtd)
 
             # ----------------------------------------------------------------
             # 5) Thermal states (unchanged)
