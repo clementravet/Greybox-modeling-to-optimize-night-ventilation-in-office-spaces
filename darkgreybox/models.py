@@ -2925,6 +2925,8 @@ class TiTmCn2R2C_winter_V6(DarkGreyModel):
         MVV    = X['MVV']    # Radiator valve position (0–1)
         Tfor  = X['Tfor']  # Hot water supply temperature
 
+        MVV = MVV/100.0  # Convert from % to fraction if needed
+
         dt = self.rec_duration
 
         for k in range(1, num_rec):
