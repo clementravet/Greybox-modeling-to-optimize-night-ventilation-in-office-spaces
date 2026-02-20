@@ -2922,7 +2922,7 @@ class TiTmCn2R2C_winter_V6(DarkGreyModel):
         qv     = X['qv']
         Ik     = X['Ik']
         c_meas = X['c']
-        MVV    = X['MVV']    # Radiator valve position (0–1)
+        MVV    = X['MVV']/100    # Radiator valve position (0–1)
         Tfor  = X['Tfor']  # Hot water supply temperature
 
         MVV = MVV/100.0  # Convert from % to fraction if needed
