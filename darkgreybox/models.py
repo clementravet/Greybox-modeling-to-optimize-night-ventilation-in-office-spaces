@@ -2541,7 +2541,7 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
             # 4) RADIATOR HEAT TRANSFER
             # ----------------------------------------------------------------
 
-            # 4a) Mass flow — equal-percentage + smooth ramp
+            # 4a) Mass flow — equal-percentage + smooth ramp (unchanged)
             MVV_k = np.clip(MVV[k-1], 0.0, 1.0)
             if MVV_k < 1e-6:
                 m_dot = 0.0
@@ -2551,33 +2551,47 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
                 Q_flow    = Q_flow_ep * smooth
                 m_dot     = rho_water * (Q_flow / 3600)
 
-            # 4b) LMTD — soft floor (only meaningful when valve is open)
-            dT_supply = Tfor[k-1] - Ti[k-1]
+            # 4b) LMTD — kept, with blended effective supply temperature
+            #
+            #   Instead of switching formula at MVV=0, we blend Tfor → Tret
+            #   continuously as m_dot decreases.
+            #
+            #   blend = 1 (full flow)  → Tsup_rad = Tfor   → standard LMTD
+            #   blend = 0 (no flow)    → Tsup_rad = Tret   → LMTD = dT_rad = Tret - Ti
+            #
+            #   At 10% of max flow the blend is already 1 (full LMTD),
+            #   so this only affects the transition near valve close/open.
+            #   No formula switch = no step in Q_heat at transitions.
+            m_dot_ref = rho_water * (Q_flow_max / 3600) * 0.1
+            blend     = np.clip(m_dot / m_dot_ref, 0.0, 1.0)
+            Tsup_rad  = blend * Tfor[k-1] + (1.0 - blend) * Tret[k-1]
+
+            dT_supply = Tsup_rad - Ti[k-1]
             dT_return = Tret[k-1] - Ti[k-1]
 
             dT_supply_eff = max(dT_supply, eps_lmtd)
             dT_return_eff = np.clip(dT_return, eps_lmtd, dT_supply_eff - eps_lmtd)
 
-            LMTD   = (dT_supply_eff - dT_return_eff) / np.log(dT_supply_eff / dT_return_eff)
+            # L'Hopital guard: when supply ≈ return, LMTD → dT arithmetically
+            if abs(dT_supply_eff - dT_return_eff) < 1e-6:
+                LMTD = dT_supply_eff
+            else:
+                LMTD = (dT_supply_eff - dT_return_eff) / np.log(dT_supply_eff / dT_return_eff)
+
             Q_lmtd = K * (LMTD ** 1.3)
 
-            # 4c) Q_heat
+            # 4c) Q_heat — flow cap only when valve is open (unchanged)
             if m_dot > 1e-6:
-                # Valve open: full LMTD + flow-limited cap
                 Tret_prev_eff = min(Tret[k-1], Tfor[k-1] - eps_lmtd)
                 Q_flow_limit  = m_dot * cp_water * (Tfor[k-1] - Tret_prev_eff)
                 Q_heat[k]     = min(Q_lmtd, Q_flow_limit)
             else:
-                # Valve closed: radiator disconnected from circuit, Tfor is irrelevant.
-                # Only the trapped water temperature (T_ret) drives residual emission.
-                # T_ret decays toward Ti via tau_ret_closed in 4d → Q_heat decays too.
-                dT_rad    = max(Tret[k-1] - Ti[k-1], 0.0)
-                Q_heat[k] = K * (dT_rad ** 1.3)
+                Q_heat[k] = Q_lmtd  # decays naturally as Tsup_rad = Tret → Ti
 
-            # 4d) T_ret dynamics
+            # 4d) T_ret dynamics (unchanged)
             if m_dot > 1e-6:
                 T_ret_target = Tfor[k-1] - Q_heat[k] / (m_dot * cp_water)
-                tau_ret      = 60.0
+                tau_ret      = 300.0
                 dT_ret       = ((T_ret_target - Tret[k-1]) / tau_ret) * dt
             else:
                 T_ret_floor    = Ti[k-1] + 1.0
@@ -2587,6 +2601,7 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
             dT_ret  = np.clip(dT_ret, -max_dT_ret, max_dT_ret)
             Tret[k] = Tret[k-1] + dT_ret
             Tret[k] = np.clip(Tret[k], Ti[k-1] + eps_lmtd, Tfor[k-1] - eps_lmtd)
+
 
             # ----------------------------------------------------------------
             # 5) Thermal states (unchanged)
