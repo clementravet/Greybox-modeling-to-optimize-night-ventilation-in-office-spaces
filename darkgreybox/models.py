@@ -2541,29 +2541,18 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
             # 4) RADIATOR HEAT TRANSFER
             # ----------------------------------------------------------------
 
-            # 4a) Mass flow — CHANGE 3 (updated): equal-percentage + smooth ramp
-            #
-            #   Original:  hard if/else at MVV > 0.01 → sudden Q_heat on/off
-            #   Previous:  replaced with linear characteristic (user reverted)
-            #   Now:       keep equal-percentage R_valve^(MVV-1) for MVV ≥ MVV_min,
-            #              linearly ramp flow to 0 for MVV < MVV_min.
-            #
-            #   Why the ramp?
-            #   Equal-percentage gives Q_flow = Q_flow_max / R_valve at MVV→0,
-            #   not zero.  Without a ramp, any hard cutoff creates a step-change
-            #   of size Q_flow_max/R_valve (≈ 3% of max for R_valve=30).
-            #   The linear ramp smoothly bridges that gap to 0.
+            # 4a) Mass flow — equal-percentage + smooth ramp near zero
             MVV_k = np.clip(MVV[k-1], 0.0, 1.0)
 
             if MVV_k < 1e-6:
                 m_dot = 0.0
             else:
-                Q_flow_ep = Q_flow_max * (R_valve ** (MVV_k - 1))  # equal-percentage [l/h]
-                smooth    = min(MVV_k / MVV_min, 1.0)              # ramp: 0→1 over [0, MVV_min]
+                Q_flow_ep = Q_flow_max * (R_valve ** (MVV_k - 1))  # l/h
+                smooth    = min(MVV_k / MVV_min, 1.0)
                 Q_flow    = Q_flow_ep * smooth
-                m_dot     = rho_water * (Q_flow / 3600)            # kg/s
+                m_dot     = rho_water * (Q_flow / 3600)             # kg/s
 
-            # 4b) LMTD — CHANGE 4: soft floor
+            # 4b) LMTD — soft floor (unchanged)
             dT_supply = Tfor[k-1] - Ti[k-1]
             dT_return = Tret[k-1] - Ti[k-1]
 
@@ -2572,27 +2561,35 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
 
             LMTD = (dT_supply_eff - dT_return_eff) / np.log(dT_supply_eff / dT_return_eff)
 
-            # 4c) Transfer-limited power
+            # 4c) Q_heat — CHANGE: always compute from LMTD, even when valve is closed.
+            #     When m_dot = 0, Q_heat decays naturally as T_ret → Ti (see 4d).
+            #     This replaces the hard Q_heat = 0 that caused the vertical spikes.
             Q_lmtd = K * (LMTD ** 1.3)
 
-            # CHANGE 5: flow-limited power cap
             if m_dot > 1e-6:
+                # Valve open: cap by flow-limited power
                 Q_flow_limit = m_dot * cp_water * max(Tfor[k-1] - Tret[k-1], 0.0)
                 Q_heat[k] = min(Q_lmtd, Q_flow_limit)
             else:
-                Q_heat[k] = 0.0
+                # Valve closed: residual emission from cooling radiator body — NO hard zero
+                Q_heat[k] = Q_lmtd
 
-            # 4d) Return-temperature dynamics — CHANGE 6 + 7
+            # 4d) T_ret dynamics — use a slower time constant when valve is closed
+            #     to represent the heavier thermal inertia of stagnant water + metal body
             if m_dot > 1e-6:
                 T_ret_target = Tfor[k-1] - Q_heat[k] / (m_dot * cp_water)
                 tau_ret = 60.0
-                dT_ret = ((T_ret_target - Tret[k-1]) / tau_ret) * dt
+                dT_ret  = ((T_ret_target - Tret[k-1]) / tau_ret) * dt
             else:
-                dT_ret = ((Ti[k-1] - Tret[k-1]) / 300.0) * dt
+                # CHANGE: was 300s, now use tau_ret_closed to control decay speed.
+                # Increase this value if Q_heat still drops too fast after valve closes.
+                tau_ret_closed = 600.0  # seconds — tune based on your radiator size
+                dT_ret = ((Ti[k-1] - Tret[k-1]) / tau_ret_closed) * dt
 
-            dT_ret  = np.clip(dT_ret, -max_dT_ret, max_dT_ret)  # CHANGE 6
+            dT_ret  = np.clip(dT_ret, -max_dT_ret, max_dT_ret)
             Tret[k] = Tret[k-1] + dT_ret
-            Tret[k] = np.clip(Tret[k], Ti[k-1], Tfor[k-1])       # CHANGE 7
+            Tret[k] = np.clip(Tret[k], Ti[k-1], Tfor[k-1])
+
 
             # ----------------------------------------------------------------
             # 5) Thermal states (unchanged)
