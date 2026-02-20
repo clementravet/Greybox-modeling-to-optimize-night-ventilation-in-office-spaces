@@ -2955,3 +2955,182 @@ class TiTmCn2R2C_winter_V6(DarkGreyModel):
              'Q_solar': Q_solar, 'Q_heat': Q_heat}
         )
 
+class TiTmCn2R2C_mix(DarkGreyModel):
+    """
+    Grey-box model with Christoffer Rasmussen's time-dependent solar aperture
+    AND an ε-NTU radiator model (from winter V6).
+
+    Key Innovation: Instead of a single constant 'g' parameter, the solar
+    aperture varies throughout the day using B-spline basis functions:
+    g(t) = phi_0*B_0(t) + phi_1*B_1(t) + ... + phi_n*B_n(t)
+
+    Heating: equal-percentage valve → mass flow → ε-NTU → Q_heat
+
+    Parameters (ADDED from winter V6)
+    -----------------------------------
+    UA          : Radiator heat transfer coefficient (W/K)
+    Q_flow_max  : Max water flow at full valve opening (l/h)
+    R_valve     : Valve rangeability (-), typically fixed at 30
+    cp_water    : Specific heat of water, 4186 J/(kg·K), typically fixed
+    rho_water   : Density of water, 1000 kg/m³, typically fixed
+
+    Inputs X (ADDED from winter V6)
+    ---------------------------------
+    MVV   : Radiator valve position (0–100 %)
+    Tfor  : Hot water supply temperature to radiator (°C)
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states
+        Ti = np.zeros(num_rec)
+        Tm = np.zeros(num_rec)
+        c  = np.zeros(num_rec)
+        N  = np.zeros(num_rec)
+
+        # Allocate outputs
+        Q_int   = np.zeros(num_rec)
+        Q_vent  = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+        Q_heat  = np.zeros(num_rec)   # ADDED
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # Parameters (unchanged from V4)
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        q_pers        = params['q_pers'].value
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        A             = params['A'].value
+        G             = params['G'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        alpha         = params['alpha'].value
+        gamma_g       = params['gamma_g'].value
+        n             = params['n'].value
+        K             = params['K'].value
+        L             = params['L'].value
+
+        # NEW: Extract B-spline coefficients (unchanged from V4)
+        phi_names  = ['phi_a', 'phi_b', 'phi_c', 'phi_d', 'phi_e',
+                      'phi_f', 'phi_g', 'phi_h', 'phi_i', 'phi_j']
+        phi        = np.array([params[name].value for name in phi_names])
+        n_bsplines = len(phi)
+
+        # ADDED: Radiator / heating parameters (from winter V6)
+        UA          = params['UA'].value
+        Q_flow_max  = params['Q_flow_max'].value
+        R_valve     = params['R_valve'].value
+        cp_water    = params['cp_water'].value
+        rho_water   = params['rho_water'].value
+
+        # Inputs (unchanged from V4)
+        Ta      = X['Ta']
+        Tsup    = X['Tsup']
+        qv      = X['qv']
+        Ik      = X['Ik']
+        c_meas  = X['c']
+        theta_z = X['theta_z']
+        gamma_s = X['gamma_s']
+
+        # ADDED: Heating inputs (from winter V6)
+        MVV   = np.array(X['MVV']) / 100.0  # convert % → fraction
+        Tfor  = X['Tfor']
+
+        # NEW: Extract B-spline basis functions (unchanged from V4)
+        bsplines = np.column_stack([X[f'bs_{i}'] for i in range(n_bsplines)])
+
+        dt = self.rec_duration
+
+        # Pre-compute IAM outside the loop (unchanged from V4)
+        theta_z_array = 90 - np.array(theta_z)
+        gamma_s_array = np.array(gamma_s)
+
+        aoi_deg_all = pvlib.irradiance.aoi(
+            surface_tilt=90,
+            surface_azimuth=gamma_g,
+            solar_zenith=theta_z_array,
+            solar_azimuth=gamma_s_array
+        )
+        iam_all = pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L)
+
+        # NEW: Time-varying solar aperture (unchanged from V4)
+        g_t = bsplines @ phi  # [num_rec × n_bsplines] @ [n_bsplines] → [num_rec]
+
+        for k in range(1, num_rec):
+
+            # 1) Ventilation heat (unchanged)
+            Q_vent[k] = rho_air * cp_air * (qv[k-1] / 3600) * (Tsup[k-1] - Ti[k-1])
+
+            # 2) Internal gains (unchanged)
+            Q_int[k] = (q_pers + q_equip_var) * N[k-1] + q_equip_const * S
+
+            # 3) Solar gains with time-varying g(t) and IAM (unchanged from V4)
+            Q_solar[k] = g_t[k-1] * iam_all[k-1] * A * Ik[k-1]
+
+            # 4) ε-NTU radiator heat transfer (ADDED — identical to winter V6)
+            # 4a) Equal-percentage valve → mass flow rate
+            if MVV[k-1] > 0.05:
+                Q_flow = Q_flow_max * (R_valve ** (MVV[k-1] - 1))  # l/h
+                m_dot  = rho_water * (Q_flow / 3600)               # kg/s
+            else:
+                m_dot = 0.0
+
+            # 4b) ε-NTU effectiveness
+            m_dot_safe = max(m_dot, 1e-6)       # regularise to avoid /0
+            C_water    = m_dot_safe * cp_water  # W/K
+            NTU        = UA / C_water
+            epsilon    = 1.0 - np.exp(-NTU)
+
+            # 4c) Heat delivered to room
+            dT_available = max(0.0, Tfor[k-1] - Ti[k-1])
+            Q_heat[k] = epsilon * C_water * dT_available
+            # Limits: m_dot→0 ⇒ product→0 ✓;  m_dot→∞ ⇒ Q_heat→UA·ΔT ✓
+
+            # 5) Thermal states — Q_heat ADDED to dTi (UPDATED)
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci
+            ) * dt
+
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+            # 6) CO2 / occupancy (unchanged)
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
+            dN = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+            dc = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
+            c[k] = c[k-1] + dc
+
+        # Fill t = 0
+        Q_int[0]   = Q_int[1]
+        Q_vent[0]  = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+        Q_heat[0]  = Q_heat[1]   # ADDED
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {
+                'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N,
+                'Q_int': Q_int, 'Q_vent': Q_vent,
+                'Q_solar': Q_solar, 'Q_heat': Q_heat   # ADDED Q_heat
+            }
+        )
