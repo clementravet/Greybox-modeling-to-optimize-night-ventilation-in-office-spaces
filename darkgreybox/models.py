@@ -2826,3 +2826,174 @@ class TiTmCn2R2C_winter_V5(DarkGreyModel):
             {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N, 'Tret': Tret,
              'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar, 'Q_heat': Q_heat}
         )
+
+class TiTmCn2R2C_winter_V6(DarkGreyModel):
+    """
+    Grey-box model of one room with:
+      - 3R2C thermal model (Ti, Tm)
+      - Ventilation, solar, internal gains (unchanged from summer)
+      - ε-NTU radiator model replacing LMTD
+        → Handles MVV=0 gracefully, no T_ret state needed
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Tm  : Lumped thermal mass temperature (°C)
+    c   : Indoor CO2 concentration (ppm)
+    N   : Effective occupancy (persons)
+    ### REMOVED: T_ret (no longer needed as a state)
+
+    Inputs X
+    --------
+    Ta      : Ambient temperature (°C)
+    Tsup    : Supply air temperature for ventilation (°C)
+    qv      : Ventilation flow rate (m³/h)
+    Ik      : Irradiance (W/m²)
+    c       : CO2 concentration (ppm) [measured]
+    MVV     : Radiator valve position (0–1)
+    T_for   : Hot water supply temperature to radiator (°C)
+
+    Parameters
+    ----------
+    Ti0, Tm0, c0, N0  : Initial states (T_ret0 REMOVED)
+    Ci, Cm            : Capacitances (J/K)
+    Rim, Rout         : Thermal resistances (K/W)
+    rho_air, cp_air   : Air properties
+    V, S, A           : Room geometry
+    G, c_out          : CO2 parameters
+    q_pers, q_equip_var, q_equip_const : Gains
+    g, alpha          : Solar transmittance, EMA filter
+    UA        : Radiator heat transfer coeff (W/K)  ← replaces K
+    Q_flow_max: Max water flow at full opening (l/h) ← estimate
+    R_valve   : Valve rangeability (-)              ← fix at 30 or estimate
+    cp_water  : 4186 J/(kg·K)                       ← fix
+    rho_water : 1000 kg/m³                          ← fix
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # --- Allocate states ---
+        Ti = np.zeros(num_rec)
+        Tm = np.zeros(num_rec)
+        c  = np.zeros(num_rec)
+        N  = np.zeros(num_rec)
+
+        # --- Allocate outputs ---
+        Q_int  = np.zeros(num_rec)
+        Q_vent = np.zeros(num_rec)
+        Q_solar= np.zeros(num_rec)
+        Q_heat = np.zeros(num_rec)
+
+        # --- Initial conditions ---
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # --- Parameters (unchanged from summer) ---
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        q_pers        = params['q_pers'].value
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        A             = params['A'].value
+        G             = params['G'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        g             = params['g'].value
+        alpha         = params['alpha'].value
+
+        # --- NEW heating parameters ---
+        UA          = params['UA'].value        # Radiator heat transfer (W/K)
+        Q_flow_max  = params['Q_flow_max'].value  # Max flow (l/h)
+        R_valve     = params['R_valve'].value   # Rangeability, e.g. 30
+        cp_water    = params['cp_water'].value  # 4186 J/kgK
+        rho_water   = params['rho_water'].value # 1000 kg/m³
+
+        # --- Inputs ---
+        Ta     = X['Ta']
+        Tsup   = X['Tsup']
+        qv     = X['qv']
+        Ik     = X['Ik']
+        c_meas = X['c']
+        MVV    = X['MVV']    # Radiator valve position (0–1)
+        T_for  = X['T_for']  # Hot water supply temperature
+
+        dt = self.rec_duration
+
+        for k in range(1, num_rec):
+
+            # 1) Ventilation heat
+            Q_vent[k] = rho_air * cp_air * (qv[k-1] / 3600) * (Tsup[k-1] - Ti[k-1])
+
+            # 2) Internal gains
+            Q_int[k] = (q_pers + q_equip_var) * N[k-1] + q_equip_const * S
+
+            # 3) Solar gains
+            Q_solar[k] = g * A * Ik[k-1]
+
+            # 4) ε-NTU radiator heat transfer
+            # Ref: Wetter et al. (2014), Modelica Buildings Library
+            #      Bouskela & El Hefni (2014), Modelica Conference
+
+            # 4a) Mass flow rate: equal percentage valve (Option 1)
+            if MVV[k-1] > 0.05:
+                Q_flow = Q_flow_max * (R_valve ** (MVV[k-1] - 1))  # l/h
+                m_dot  = rho_water * (Q_flow / 3600)               # kg/s
+            else:
+                m_dot = 0.0
+
+            # 4b) ε-NTU: handles m_dot=0 naturally
+            # Regularize to avoid division by zero (Bouskela & El Hefni, 2014)
+            m_dot_safe = max(m_dot, 1e-6)               # tiny regularization
+            C_water    = m_dot_safe * cp_water           # W/K
+            NTU        = UA / C_water                    # dimensionless
+            epsilon    = 1.0 - np.exp(-NTU)             # effectiveness (0–1)
+
+            # 4c) Heat transfer to room
+            dT_available = max(0.0, T_for[k-1] - Ti[k-1])
+            Q_heat[k] = epsilon * C_water * dT_available
+            # When m_dot=0: C_water→0, epsilon→1, product→0 ✓
+            # When m_dot large: epsilon→(1-e^-NTU), Q_heat→UA*LMTD ✓
+
+            # 5) Thermal states (unchanged structure, Q_heat added)
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+                + (Q_vent[k] + Q_solar[k] + Q_int[k] + Q_heat[k]) / Ci
+            ) * dt
+
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+            # 6) CO2-occupancy (unchanged)
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
+            dN = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+            dc = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
+            c[k] = c[k-1] + dc
+
+        # Fill t=0
+        Q_int[0]  = Q_int[1]
+        Q_vent[0] = Q_vent[1]
+        Q_solar[0]= Q_solar[1]
+        Q_heat[0] = Q_heat[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N,
+             'Q_int': Q_int, 'Q_vent': Q_vent,
+             'Q_solar': Q_solar, 'Q_heat': Q_heat}
+        )
+
