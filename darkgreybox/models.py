@@ -2541,54 +2541,48 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
             # 4) RADIATOR HEAT TRANSFER
             # ----------------------------------------------------------------
 
-            # 4a) Mass flow — equal-percentage + smooth ramp near zero
+            # 4a) Mass flow — equal-percentage + smooth ramp
             MVV_k = np.clip(MVV[k-1], 0.0, 1.0)
-
             if MVV_k < 1e-6:
                 m_dot = 0.0
             else:
-                Q_flow_ep = Q_flow_max * (R_valve ** (MVV_k - 1))  # l/h
+                Q_flow_ep = Q_flow_max * (R_valve ** (MVV_k - 1))
                 smooth    = min(MVV_k / MVV_min, 1.0)
                 Q_flow    = Q_flow_ep * smooth
-                m_dot     = rho_water * (Q_flow / 3600)             # kg/s
+                m_dot     = rho_water * (Q_flow / 3600)
 
-            # 4b) LMTD — soft floor (unchanged)
+            # 4b) LMTD — soft floor
             dT_supply = Tfor[k-1] - Ti[k-1]
             dT_return = Tret[k-1] - Ti[k-1]
 
             dT_supply_eff = max(dT_supply, eps_lmtd)
             dT_return_eff = np.clip(dT_return, eps_lmtd, dT_supply_eff - eps_lmtd)
 
-            LMTD = (dT_supply_eff - dT_return_eff) / np.log(dT_supply_eff / dT_return_eff)
-
-            # 4c) Q_heat — CHANGE: always compute from LMTD, even when valve is closed.
-            #     When m_dot = 0, Q_heat decays naturally as T_ret → Ti (see 4d).
-            #     This replaces the hard Q_heat = 0 that caused the vertical spikes.
+            LMTD  = (dT_supply_eff - dT_return_eff) / np.log(dT_supply_eff / dT_return_eff)
             Q_lmtd = K * (LMTD ** 1.3)
 
+            # 4c) Q_heat — flow-limited cap using capped T_ret (FIX 1)
             if m_dot > 1e-6:
-                # Valve open: cap by flow-limited power
-                Q_flow_limit = m_dot * cp_water * max(Tfor[k-1] - Tret[k-1], 0.0)
-                Q_heat[k] = min(Q_lmtd, Q_flow_limit)
+                Tret_prev_eff = min(Tret[k-1], Tfor[k-1] - eps_lmtd)  # ← FIX 1
+                Q_flow_limit  = m_dot * cp_water * (Tfor[k-1] - Tret_prev_eff)
+                Q_heat[k]     = min(Q_lmtd, Q_flow_limit)
             else:
-                # Valve closed: residual emission from cooling radiator body — NO hard zero
-                Q_heat[k] = Q_lmtd
+                Q_heat[k] = Q_lmtd  # residual emission when valve closed
 
-            # 4d) T_ret dynamics — use a slower time constant when valve is closed
-            #     to represent the heavier thermal inertia of stagnant water + metal body
+            # 4d) T_ret dynamics
             if m_dot > 1e-6:
                 T_ret_target = Tfor[k-1] - Q_heat[k] / (m_dot * cp_water)
-                tau_ret = 60.0
-                dT_ret  = ((T_ret_target - Tret[k-1]) / tau_ret) * dt
+                tau_ret      = 60.0
+                dT_ret       = ((T_ret_target - Tret[k-1]) / tau_ret) * dt
             else:
-                # CHANGE: was 300s, now use tau_ret_closed to control decay speed.
-                # Increase this value if Q_heat still drops too fast after valve closes.
-                tau_ret_closed = 3600.0  # seconds — tune based on your radiator size
-                dT_ret = ((Ti[k-1] - Tret[k-1]) / tau_ret_closed) * dt
+                T_ret_floor = Ti[k-1] + 1.0
+                tau_ret_closed = 3600.0
+                dT_ret = ((T_ret_floor - Tret[k-1]) / tau_ret_closed) * dt
 
             dT_ret  = np.clip(dT_ret, -max_dT_ret, max_dT_ret)
             Tret[k] = Tret[k-1] + dT_ret
-            Tret[k] = np.clip(Tret[k], Ti[k-1], Tfor[k-1])
+            Tret[k] = np.clip(Tret[k], Ti[k-1] + eps_lmtd, Tfor[k-1] - eps_lmtd)  # ← FIX 2
+
 
 
             # ----------------------------------------------------------------
