@@ -2583,7 +2583,7 @@ class TiTmCn2R2C_winter_V4(DarkGreyModel):
             else:
                 # CHANGE: was 300s, now use tau_ret_closed to control decay speed.
                 # Increase this value if Q_heat still drops too fast after valve closes.
-                tau_ret_closed = 600.0  # seconds — tune based on your radiator size
+                tau_ret_closed = 3600.0  # seconds — tune based on your radiator size
                 dT_ret = ((Ti[k-1] - Tret[k-1]) / tau_ret_closed) * dt
 
             dT_ret  = np.clip(dT_ret, -max_dT_ret, max_dT_ret)
