@@ -2233,6 +2233,118 @@ class TiTmCn2R2C_summer_V7(DarkGreyModel):
              'Q_solar': Q_solar, 'Q_neigh': Q_neigh}
         )
 
+class TiTmCn2R2C_summer_V8(DarkGreyModel):
+    """
+    Extends TiTmCn2R2C_summer with solar gain split between Ti and Tm.
+
+    Key change: Q_solar is now distributed between air and mass nodes
+    using a fitted solar distribution factor f_sol:
+      - f_sol      * Q_solar → Ti (air node, direct heating of air/light elements)
+      - (1-f_sol)  * Q_solar → Tm (mass node, solar absorbed by floor/walls)
+
+    New Parameter
+    -------------
+    f_sol : Solar fraction to air node Ti (0=all to mass, 1=all to air)
+            Physically: ~0.3 for heavy concrete floor, ~0.6 for light construction
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states
+        Ti  = np.zeros(num_rec)
+        Tm  = np.zeros(num_rec)
+        c   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+
+        # Allocate output arrays
+        Q_int   = np.zeros(num_rec)
+        Q_vent  = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # Parameters (unchanged)
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        q_pers        = params['q_pers'].value
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        A             = params['A'].value
+        G             = params['G'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        g             = params['g'].value
+        alpha         = params['alpha'].value
+
+        # NEW: solar distribution factor
+        f_sol = params['f_sol'].value  # fraction to Ti; (1 - f_sol) goes to Tm
+
+        # Inputs
+        Ta     = X['Ta']
+        Tsup   = X['Tsup']
+        qv     = X['qv']
+        Ik     = X['Ik']
+        c_meas = X['c']
+
+        dt = self.rec_duration
+
+        for k in range(1, num_rec):
+            # 1) Ventilation heat
+            Q_vent[k] = rho_air * cp_air * (qv[k-1] / 3600) * (Tsup[k-1] - Ti[k-1])
+
+            # 2) Internal gains
+            Q_int[k] = (q_pers + q_equip_var) * N[k-1] + q_equip_const * S
+
+            # 3) Total solar gain (unchanged formula)
+            Q_solar[k] = g * A * Ik[k-1]
+
+            # 4) Thermal states — UPDATED: solar gain is now split
+            #
+            # dTi: receives f_sol fraction of solar gain
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+                + (Q_vent[k] + f_sol * Q_solar[k] + Q_int[k]) / Ci
+            ) * dt
+
+            # dTm: receives (1 - f_sol) fraction of solar gain
+            #      (previously had no direct solar input)
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)
+                + (1.0 - f_sol) * Q_solar[k] / Cm
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+            # 5) CO2 / occupancy (unchanged)
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
+            dN   = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+            dc   = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
+            c[k] = c[k-1] + dc
+
+        Q_int[0]   = Q_int[1]
+        Q_vent[0]  = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N,
+             'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar}
+        )
+
 
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
     """
