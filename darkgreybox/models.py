@@ -2157,16 +2157,7 @@ class TiTmCn2R2C_summer_V7(DarkGreyModel):
         rho_air       = params['rho_air'].value
         cp_air        = params['cp_air'].value
         alpha         = params['alpha'].value
-        gamma_g       = params['gamma_g'].value
-        n             = params['n'].value
-        K             = params['K'].value
-        L             = params['L'].value
-
-        # B-spline coefficients (unchanged)
-        phi_names = ['phi_a', 'phi_b', 'phi_c', 'phi_d', 'phi_e',
-                     'phi_f', 'phi_g', 'phi_h', 'phi_i', 'phi_j']
-        phi       = np.array([params[name].value for name in phi_names])
-        n_bsplines = len(phi)
+        g            = params['g'].value
 
         # NEW: Load neighbour resistances and temperature inputs dynamically
         # Detect how many neighbours are defined (Rneigh_1, Rneigh_2, ...)
@@ -2188,25 +2179,8 @@ class TiTmCn2R2C_summer_V7(DarkGreyModel):
         qv      = X['qv']
         Ik      = X['Ik']
         c_meas  = X['c']
-        theta_z = X['theta_z']
-        gamma_s = X['gamma_s']
-
-        # B-spline basis functions: shape (num_rec, n_bsplines)
-        bsplines = np.column_stack([X[f'bs_{i}'] for i in range(n_bsplines)])
 
         dt = self.rec_duration
-
-        # Pre-compute AOI and IAM (unchanged)
-        theta_z_array = 90 - np.array(theta_z)
-        gamma_s_array = np.array(gamma_s)
-        aoi_deg_all   = pvlib.irradiance.aoi(
-            surface_tilt=90, surface_azimuth=gamma_g,
-            solar_zenith=theta_z_array, solar_azimuth=gamma_s_array
-        )
-        iam_all = pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L)
-
-        # Time-varying solar aperture (unchanged)
-        g_t = bsplines @ phi  # shape (num_rec,)
 
         for k in range(1, num_rec):
             # 1) Ventilation heat (unchanged)
@@ -2215,8 +2189,8 @@ class TiTmCn2R2C_summer_V7(DarkGreyModel):
             # 2) Internal gains (unchanged)
             Q_int[k] = (q_pers + q_equip_var) * N[k-1] + q_equip_const * S
 
-            # 3) Solar gains (unchanged)
-            Q_solar[k] = g_t[k-1] * iam_all[k-1] * A * Ik[k-1]
+            # 3) Solar gains
+            Q_solar[k] = g * A * Ik[k-1]
 
             # 4) NEW: Inter-zone heat transfer from all neighbours
             # Q_neigh = sum_j [ (T_neigh_j - Ti) / Rneigh_j ]
