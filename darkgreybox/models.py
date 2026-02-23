@@ -2676,106 +2676,144 @@ class TiTmCn2R2C_summer_V10(DarkGreyModel):
 
 class TiTmCn2R2C_summer_V11(DarkGreyModel):
     """
-    Same as V10 but replaces the EMA-based N estimator with a scalar
-    Kalman Filter (KF) that optimally fuses the CO2 mass-balance model
-    with noisy CO2 measurements.
+    Grey-box model of one room with:
+      - 3R2C thermal model (Ti, Tm)
+      - Ventilation via q_v (m3/h), solar and internal gains
+      - CO2-based grey-box occupancy sub-model (c in ppm)
+      - Kalman Filter for optimal N estimation (replaces EMA / alpha)
 
-    New Parameters
-    --------------
-    sigma_N : Process noise std dev for occupancy [persons] — how fast N can change
-    sigma_c : CO2 measurement noise std dev [ppm]    — sensor accuracy
-    P0_N    : Initial state variance for N [persons²]
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Tm  : Lumped thermal mass temperature (°C)
+    c   : Indoor CO2 concentration (ppm)
+    N   : Effective occupancy (persons)  ← estimated via Kalman Filter
+
+    Inputs X
+    --------
+    Ta      : Ambient temperature (°C)
+    Tsup    : Supply air temperature for ventilation (°C)
+    qv      : Ventilation flow rate (m3/h)
+    Ik      : Irradiance (W/m²)
+    c       : CO2 concentration (ppm) [measured]
+
+    Parameters (params)
+    -------------------
+    Ti0, Tm0, c0, N0  : Initial states
+    Ci                : Air + light capacitance (J/K)
+    Cm                : Thermal mass capacitance (J/K)
+    Rim               : Resistance Ti-Tm (K/W)
+    Rout              : Resistance Ti-Ta (K/W)
+    rho_air, cp_air   : Air density (kg/m3), specific heat (J/kgK)
+    V                 : Room volume (m³)
+    S                 : Room surface (m²)
+    A                 : Window area (m²)
+    G_base            : CO2 emission per person at 1 Met (m³/h/person), fixed=0.016
+    Met               : Metabolic rate (Met), fixed=1.2 for light office work
+    c_out             : Outdoor CO2 fraction (ppm)
+    alpha_lat         : Latent heat per person at 1 Met (W/person), fitted ~35-45
+    q_equip_var       : Equipment heat gain per person (W/person)
+    q_equip_const     : Constant equipment gains (W/m²)
+    g                 : Total solar energy transmittance of the glazing
+    sigma_N           : Process noise std dev for N [persons] — replaces alpha
+    sigma_c           : CO2 measurement noise std dev [ppm]   — from sensor spec
+    P0_N              : Initial state variance for N [persons²]
     """
 
     def model(self, params, X):
-        num_rec = len(X["Ta"])
+        num_rec = len(X['Ta'])
 
-        # ── Allocate states ───────────────────────────────────────────────
-        Ti      = np.zeros(num_rec)
-        Tm      = np.zeros(num_rec)
-        c       = np.zeros(num_rec)
-        N       = np.zeros(num_rec)
+        # Allocate states
+        Ti  = np.zeros(num_rec)
+        Tm  = np.zeros(num_rec)
+        c   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+
+        # Allocate arrays for outputs
         Q_int   = np.zeros(num_rec)
         Q_vent  = np.zeros(num_rec)
         Q_solar = np.zeros(num_rec)
-        P_kf    = np.zeros(num_rec)   # KF state variance (for diagnostics)
-        K_kf    = np.zeros(num_rec)   # Kalman gain      (for diagnostics)
 
-        # ── Initial conditions ────────────────────────────────────────────
-        Ti[0] = params["Ti0"]
-        Tm[0] = params["Tm0"]
-        c[0]  = params["c0"]
-        N[0]  = params["N0"]
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
 
-        # ── Physical parameters ───────────────────────────────────────────
-        Ci            = params["Ci"].value
-        Cm            = params["Cm"].value
-        Rim           = params["Rim"].value
-        Rout          = params["Rout"].value
-        q_equip_var   = params["q_equip_var"].value
-        q_equip_const = params["q_equip_const"].value
-        V             = params["V"].value
-        S             = params["S"].value
-        A             = params["A"].value
-        c_out         = params["c_out"].value
-        rho_air       = params["rho_air"].value
-        cp_air        = params["cp_air"].value
-        g             = params["g"].value
-        Met           = params["Met"].value
-        G_base        = params["G_base"].value
-        alpha_lat     = params["alpha_lat"].value
+        # Parameters (unchanged)
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        A             = params['A'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        g             = params['g'].value
 
+        # Met-dependent parameters
+        Met       = params['Met'].value
+        G_base    = params['G_base'].value
+        alpha_lat = params['alpha_lat'].value
+
+        # ── DERIVED ───────────────────────────────────────────────────────
         G      = G_base * Met
         q_sens = Met * (100.0 - alpha_lat)
 
         # ── Kalman Filter parameters ──────────────────────────────────────
-        sigma_N = params["sigma_N"].value   # process noise [persons/step]
-        sigma_c = params["sigma_c"].value   # measurement noise [ppm]
+        sigma_N = params['sigma_N'].value   # process noise [persons/step]
+        sigma_c = params['sigma_c'].value   # CO2 measurement noise [ppm]
         Q_kf    = sigma_N ** 2              # process noise variance
         R_kf    = sigma_c ** 2              # measurement noise variance
 
         # KF initial state
-        N_hat   = float(params["N0"])
-        P       = params["P0_N"].value
-        P_kf[0] = P
+        N_hat = float(params['N0'])
+        P     = params['P0_N'].value
 
-        # ── Inputs ────────────────────────────────────────────────────────
-        Ta     = X["Ta"]
-        Tsup   = X["Tsup"]
-        qv     = X["qv"]
-        Ik     = X["Ik"]
-        c_meas = X["c"]
+        # Inputs
+        Ta     = X['Ta']
+        Tsup   = X['Tsup']
+        qv     = X['qv']
+        Ik     = X['Ik']
+        c_meas = X['c']
 
         dt = self.rec_duration
 
         for k in range(1, num_rec):
+            # 1) Ventilation heat
+            Q_vent[k] = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
 
-            # ── (1) Ventilation heat ──────────────────────────────────────
-            Q_vent[k] = rho_air * cp_air * (qv[k-1] / 3600) * (Tsup[k-1] - Ti[k-1])
-
-            # ── (2) Internal gains ────────────────────────────────────────
+            # 2) Internal gains
             Q_int[k] = (q_sens + q_equip_var) * N[k-1] + q_equip_const * S
 
-            # ── (3) Solar gains ───────────────────────────────────────────
+            # 3) Solar gains
             Q_solar[k] = g * A * Ik[k-1]
 
-            # ── (4) Thermal states (unchanged) ────────────────────────────
+            # 4) Thermal states (unchanged)
             dTi = (
                 (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
                 + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
                 + (Q_vent[k] + Q_solar[k] + Q_int[k]) / Ci
             ) * dt
-            dTm = ((Ti[k-1] - Tm[k-1]) / (Rim * Cm)) * dt
+
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)
+            ) * dt
+
             Ti[k] = Ti[k-1] + dTi
             Tm[k] = Tm[k-1] + dTm
 
-            # ── (5) Kalman Filter for N ───────────────────────────────────
+            # 5) Kalman Filter for N ─────────────────────────────────────
 
-            # PREDICT
-            N_hat_pred = N_hat           # random walk: best guess = last estimate
-            P_pred     = P + Q_kf        # variance grows without new measurements
+            # PREDICT: random walk — no expected change, variance grows
+            N_hat_pred = N_hat
+            P_pred     = P + Q_kf
 
-            # Predict CO2 using the mass balance at N_hat_pred
+            # Predicted CO2 at N_hat_pred via CO2 mass balance
             c_pred = c[k-1] + (
                 (G / V) * 1e6 * N_hat_pred
                 - (qv[k] / V) * (c[k-1] - c_out)
@@ -2784,23 +2822,18 @@ class TiTmCn2R2C_summer_V11(DarkGreyModel):
             # Measurement Jacobian: H = d(c_pred)/d(N) = (G/V)*1e6*dt
             H = (G / V) * 1e6 * dt
 
-            # UPDATE
-            z    = c_meas[k] - c_pred       # innovation: real CO2 - predicted CO2
-            S_kf = H * P_pred * H + R_kf    # innovation covariance
-            K    = P_pred * H / S_kf        # Kalman gain
+            # UPDATE: correct N using real vs predicted CO2
+            z    = c_meas[k] - c_pred          # innovation
+            S_kf = H * P_pred * H + R_kf       # innovation covariance
+            K    = P_pred * H / S_kf           # Kalman gain
 
-            N_hat = N_hat_pred + K * z      # corrected N estimate
-            P     = (1.0 - K * H) * P_pred # updated state variance
+            N_hat = N_hat_pred + K * z         # corrected estimate
+            P     = (1.0 - K * H) * P_pred    # updated variance
 
-            N[k]    = max(0.0, N_hat)       # physical constraint: N >= 0
-            P_kf[k] = P
-            K_kf[k] = K
+            N[k] = max(0.0, N_hat)             # physical constraint
 
-            # ── (6) CO2 state update with KF-estimated N ──────────────────
-            dc   = (
-                (G / V) * 1e6 * N[k]
-                - (qv[k] / V) * (c[k-1] - c_out)
-            ) * dt
+            # 6) CO2 state update using KF-estimated N (unchanged structure)
+            dc   = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
             c[k] = c[k-1] + dc
 
         Q_int[0]   = Q_int[1]
@@ -2809,12 +2842,10 @@ class TiTmCn2R2C_summer_V11(DarkGreyModel):
 
         return DarkGreyModelResult(
             Ti, X, params,
-            {
-                "Ti": Ti, "Tm": Tm, "c": c, "N": N,
-                "Q_int": Q_int, "Q_vent": Q_vent, "Q_solar": Q_solar,
-                "P_kf": P_kf, "K_kf": K_kf,
-            },
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N,
+             'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar}
         )
+
 
 
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
