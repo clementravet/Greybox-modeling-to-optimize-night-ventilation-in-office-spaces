@@ -2346,6 +2346,95 @@ class TiTmCn2R2C_summer_V8(DarkGreyModel):
         )
 
 
+class TiTmCn2R2C_summer_V9(DarkGreyModel):
+    """
+    Grey-box model combining:
+      1. Rasmussen's time-dependent solar aperture via B-splines (from V4)
+      2. Solar gain split between air node Ti and mass node Tm (NEW)
+      3. Inter-zone heat transfer from M neighbour rooms (NEW)
+
+    Equations
+    ---------
+    Ci * dTi/dt = (Tm-Ti)/Rim + (Ta-Ti)/Rout
+                  + Q_vent + Q_int
+                  + f_sol * Q_solar
+                  + sum_j[ (T_neigh_j - Ti) / Rneigh_j ]
+
+    Cm * dTm/dt = (Ti-Tm)/Rim
+                  + (1 - f_sol) * Q_solar
+
+    New Parameters (vs V4)
+    ----------------------
+    f_sol      : Solar fraction absorbed by air node Ti [0,1]
+                 (1-f_sol) goes to mass node Tm
+                 Init: 0.4, bounds: [0, 1]
+
+    Rneigh_1, Rneigh_2, ... : Thermal resistance to each neighbour room [K/W]
+                 Compute from geometry: Rneigh_j = 1 / (U_j * A_j)
+                 e.g. U=1.8 W/m²K, A=12m² -> Rneigh = 0.046 K/W
+                 Init: ~0.05, bounds: [0.005, 2.0]
+
+    New Inputs X (vs V4)
+    --------------------
+    T_neigh_1, T_neigh_2, ... : Interior temperature of each neighbour [°C]
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states
+        Ti = np.zeros(num_rec)
+        Tm = np.zeros(num_rec)
+        c  = np.zeros(num_rec)
+        N  = np.zeros(num_rec)
+
+        # Allocate output arrays
+        Q_int   = np.zeros(num_rec)
+        Q_vent  = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+        Q_neigh = np.zeros(num_rec)  # total inter-zone heat flux [W]
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # ── Unchanged parameters ──────────────────────────────────────────
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        q_pers        = params['q_pers'].value
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        A             = params['A'].value
+        G             = params['G'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        alpha         = params['alpha'].value
+        gamma_g       = params['gamma_g'].value
+        n             = params['n'].value
+        K             = params['K'].value
+        L             = params['L'].value
+
+        # ── NEW: solar split parameter ────────────────────────────────────
+        f_sol = params['f_sol'].value   # fraction of Q_solar to Ti
+
+        # ── B-spline coefficients (unchanged from V4) ─────────────────────
+        phi_names  = ['phi_a', 'phi_b', 'phi_c', 'phi_d', 'phi_e',
+                      'phi_f', 'phi_g', 'phi_h', 'phi_i', 'phi_j']
+        phi        = np.array([params[name].value for name in phi_names])
+        n_bsplines = len(phi)
+
+        # ── NEW: neighbour resistances (auto-detect from params) ──────────
+        neigh_keys = sorte
+
+
+
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
     """
     Grey-box model of one room with:
