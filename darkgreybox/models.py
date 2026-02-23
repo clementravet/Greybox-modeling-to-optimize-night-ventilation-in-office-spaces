@@ -2847,6 +2847,209 @@ class TiTmCn2R2C_summer_V11(DarkGreyModel):
         )
 
 
+class TiTmCn2R2C_summer_V12(DarkGreyModel):
+    """
+    Grey-box model of one room with:
+      - 3R2C thermal model (Ti, Tm)
+      - Ventilation via q_v (m3/h), solar and internal gains
+      - CO2-based grey-box occupancy sub-model (c in ppm)
+      - Full multivariate Kalman Filter on [Ti, Tm, N]
+        replacing the explicit Euler ODE with an SDE solver
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Tm  : Lumped thermal mass temperature (°C)
+    c   : Indoor CO2 concentration (ppm)
+    N   : Effective occupancy (persons)
+
+    Inputs X
+    --------
+    Ta       : Ambient temperature (°C)
+    Tsup     : Supply air temperature for ventilation (°C)
+    qv       : Ventilation flow rate (m3/h)
+    Ik       : Irradiance (W/m²)
+    c        : CO2 concentration (ppm) [measured]
+    Ti_meas  : Measured indoor temperature (°C)  ← NEW vs V11
+
+    Parameters (params)
+    -------------------
+    Ti0, Tm0, c0, N0  : Initial states
+    Ci                : Air + light capacitance (J/K)
+    Cm                : Thermal mass capacitance (J/K)
+    Rim               : Resistance Ti-Tm (K/W)
+    Rout              : Resistance Ti-Ta (K/W)
+    rho_air, cp_air   : Air density (kg/m3), specific heat (J/kgK)
+    V                 : Room volume (m³)
+    S                 : Room surface (m²)
+    A                 : Window area (m²)
+    G_base            : CO2 emission per person at 1 Met (m³/h/person), fixed=0.016
+    Met               : Metabolic rate (Met), fixed=1.2
+    c_out             : Outdoor CO2 fraction (ppm)
+    alpha_lat         : Latent heat per person (W/person)
+    q_equip_var       : Equipment heat gain per person (W/person)
+    q_equip_const     : Constant equipment gains (W/m²)
+    g                 : Solar transmittance of glazing
+    sigma_Ti          : Process noise std dev for Ti [K/step]       ← replaces nothing, NEW
+    sigma_Tm          : Process noise std dev for Tm [K/step]       ← NEW
+    sigma_N           : Process noise std dev for N  [persons/step] ← same role as V11
+    sigma_Ti_meas     : Ti sensor noise std dev [K]                 ← fixed from spec
+    sigma_c           : CO2 sensor noise std dev [ppm]              ← fixed from spec
+    P0_Ti, P0_Tm, P0_N: Initial state variances
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # ── Allocate states ───────────────────────────────────────────────
+        Ti      = np.zeros(num_rec)
+        Tm      = np.zeros(num_rec)
+        c       = np.zeros(num_rec)
+        N       = np.zeros(num_rec)
+        Q_int   = np.zeros(num_rec)
+        Q_vent  = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+
+        # Innovations — needed for log-likelihood fitting
+        z_Ti    = np.zeros(num_rec)
+        S_Ti    = np.ones(num_rec)
+
+        # ── Initial conditions ────────────────────────────────────────────
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # ── Physical parameters ───────────────────────────────────────────
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        A             = params['A'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        g             = params['g'].value
+        Met           = params['Met'].value
+        G_base        = params['G_base'].value
+        alpha_lat     = params['alpha_lat'].value
+
+        G      = G_base * Met
+        q_sens = Met * (100.0 - alpha_lat)
+
+        # ── KF noise parameters ───────────────────────────────────────────
+        sigma_Ti      = params['sigma_Ti'].value
+        sigma_Tm      = params['sigma_Tm'].value
+        sigma_N       = params['sigma_N'].value
+        sigma_Ti_meas = params['sigma_Ti_meas'].value
+        sigma_c       = params['sigma_c'].value
+
+        # Process noise covariance matrix (3x3 diagonal)
+        Q_mat = np.diag([sigma_Ti**2, sigma_Tm**2, sigma_N**2])
+
+        # ── KF initial state and covariance ───────────────────────────────
+        x_hat = np.array([Ti[0], Tm[0], float(params['N0'])])
+        P     = np.diag([params['P0_Ti'].value,
+                         params['P0_Tm'].value,
+                         params['P0_N'].value])
+        I3    = np.eye(3)
+
+        # ── Inputs ────────────────────────────────────────────────────────
+        Ta      = X['Ta']
+        Tsup    = X['Tsup']
+        qv      = X['qv']
+        Ik      = X['Ik']
+        c_meas  = X['c']
+        Ti_meas = X['Ti_meas']   # measured indoor temperature
+
+        dt = self.rec_duration
+
+        for k in range(1, num_rec):
+
+            # ── Deterministic forcing (from inputs, not states) ───────────
+            Q_vent_k  = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - x_hat[0])
+            Q_solar_k = g * A * Ik[k-1]
+            Q_vent[k]  = Q_vent_k
+            Q_solar[k] = Q_solar_k
+
+            # ── State transition matrix F (linearised Euler) ──────────────
+            # N couples into Ti through internal gains
+            F = np.array([
+                [1 - dt/(Rim*Ci) - dt/(Rout*Ci),
+                   dt/(Rim*Ci),
+                   (q_sens + q_equip_var)*dt/Ci],
+                [dt/(Rim*Cm),
+                   1 - dt/(Rim*Cm),
+                   0.0],
+                [0.0, 0.0, 1.0]
+            ])
+
+            # Additive forcing from inputs only (constant part of Q_int + Q_vent + Q_solar)
+            b = np.array([
+                (Q_vent_k + Q_solar_k + q_equip_const * S) * dt / Ci,
+                0.0,
+                0.0
+            ])
+
+            # ── PREDICT ───────────────────────────────────────────────────
+            x_pred = F @ x_hat + b
+            P_pred = F @ P @ F.T + Q_mat      # covariance grows with process noise
+
+            # ── UPDATE 1: temperature measurement ─────────────────────────
+            H_Ti    = np.array([[1.0, 0.0, 0.0]])
+            R_Ti    = sigma_Ti_meas ** 2
+            S_Ti_k  = float(H_Ti @ P_pred @ H_Ti.T) + R_Ti
+            K_Ti    = (P_pred @ H_Ti.T) / S_Ti_k
+            z_Ti_k  = Ti_meas[k] - x_pred[0]  # innovation
+
+            x_hat   = x_pred + (K_Ti * z_Ti_k).ravel()
+            P       = (I3 - K_Ti @ H_Ti) @ P_pred
+
+            z_Ti[k] = z_Ti_k     # store for log-likelihood
+            S_Ti[k] = S_Ti_k
+
+            # ── UPDATE 2: CO2 measurement ──────────────────────────────────
+            c_pred_val = c[k-1] + (
+                (G/V)*1e6 * x_hat[2]
+                - (qv[k]/V) * (c[k-1] - c_out)
+            ) * dt
+            H_c  = np.array([[0.0, 0.0, (G/V)*1e6*dt]])
+            R_c  = sigma_c ** 2
+            S_c  = float(H_c @ P @ H_c.T) + R_c
+            K_c  = (P @ H_c.T) / S_c
+            z_c  = c_meas[k] - c_pred_val
+
+            x_hat = x_hat + (K_c * z_c).ravel()
+            P     = (I3 - K_c @ H_c) @ P
+
+            # ── Store states ───────────────────────────────────────────────
+            Ti[k]    = x_hat[0]
+            Tm[k]    = x_hat[1]
+            N[k]     = max(0.0, x_hat[2])
+            Q_int[k] = (q_sens + q_equip_var) * N[k] + q_equip_const * S
+
+            # ── CO2 state update ───────────────────────────────────────────
+            dc   = ((G/V)*1e6*N[k] - (qv[k]/V)*(c[k-1]-c_out)) * dt
+            c[k] = c[k-1] + dc
+
+        Q_int[0]  = Q_int[1]
+        Q_vent[0] = Q_vent[1]
+        Q_solar[0]= Q_solar[1]
+        z_Ti[0]   = z_Ti[1]
+        S_Ti[0]   = S_Ti[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N,
+             'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar,
+             'z_Ti': z_Ti, 'S_Ti': S_Ti}
+        )
+
+
 
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
     """
