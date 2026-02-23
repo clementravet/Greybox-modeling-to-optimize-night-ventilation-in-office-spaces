@@ -2530,6 +2530,149 @@ class TiTmCn2R2C_summer_V9(DarkGreyModel):
         )
 
 
+class TiTmCn2R2C_summer_V10(DarkGreyModel):
+    """
+    Grey-box model of one room with:
+      - 3R2C thermal model (Ti, Tm)
+      - Ventilation via q_v (m3/h), solar and internal gains
+      - CO2-based grey-box occupancy sub-model (c in ppm)
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Tm  : Lumped thermal mass temperature (°C)
+    c   : Indoor CO2 concentration (ppm)
+    N   : Effective occupancy (persons)
+
+    Inputs X
+    --------
+    Ta      : Ambient temperature (°C)
+    Tsup    : Supply air temperature for ventilation (°C)
+    qv      : Ventilation flow rate (m3/h)
+    Ik      : Irradiance (W/m²)
+    c       : CO2 concentration (ppm) [measured]
+
+    Parameters (params)
+    -------------------
+    Ti0, Tm0, c0, N0  : Initial states
+    Ci                : Air + light capacitance (J/K)
+    Cm                : Thermal mass capacitance (J/K)
+    Rim               : Resistance Ti-Tm (K/W)
+    Rout              : Resistance Ti-Ta (K/W)
+    rho_air, cp_air   : Air density (kg/m3), specific heat (J/kgK)
+    V                 : Room volume (m³)
+    S                 : Room surface (m²)
+    A                 : Window area (m²)
+    G_base            : CO2 emission per person at 1 Met (m³/h/person), fixed=0.016
+    Met               : Metabolic rate (Met), fixed=1.2 for light office work
+                        → G = G_base * Met  (computed internally)
+    c_out             : Outdoor CO2 fraction (ppm)
+    alpha_lat         : Latent heat per person at 1 Met (W/person), fitted ~35-45
+                        → human sensible heat = Met * (100 - alpha_lat)
+    q_equip_var       : Equipment heat gain per person (W/person)
+    q_equip_const     : Constant equipment gains (W/m²)
+    g                 : Total solar energy transmittance of the glazing
+    alpha             : EMA filter parameter for occupancy update
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # Allocate states
+        Ti  = np.zeros(num_rec)
+        Tm  = np.zeros(num_rec)
+        c   = np.zeros(num_rec)
+        N   = np.zeros(num_rec)
+
+        # Allocate arrays for outputs
+        Q_int   = np.zeros(num_rec)
+        Q_vent  = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+
+        # Initial conditions
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # Parameters (unchanged)
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        A             = params['A'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        g             = params['g'].value
+        alpha         = params['alpha'].value
+
+        # Met-dependent parameters
+        Met       = params['Met'].value        # fixed = 1.2 for office
+        G_base    = params['G_base'].value     # fixed = 0.016 m³/h/person @ 1 Met
+        alpha_lat = params['alpha_lat'].value  # fitted, latent heat [W/person @ 1 Met]
+
+        # ── DERIVED (computed once, used throughout) ──────────────────────
+        G      = G_base * Met                  # effective CO2 emission [m³/h/person]
+        q_sens = Met * (100.0 - alpha_lat)     # human sensible heat [W/person]
+        # ─────────────────────────────────────────────────────────────────
+
+        # Inputs
+        Ta     = X['Ta']
+        Tsup   = X['Tsup']
+        qv     = X['qv']
+        Ik     = X['Ik']
+        c_meas = X['c']
+
+        dt = self.rec_duration
+
+        for k in range(1, num_rec):
+            # 1) Ventilation heat
+            Q_vent[k] = rho_air * cp_air * (qv[k-1]/3600) * (Tsup[k-1] - Ti[k-1])
+
+            # 2) Internal gains
+            Q_int[k] = (q_sens + q_equip_var) * N[k-1] + q_equip_const * S
+
+            # 3) Solar gains
+            Q_solar[k] = g * A * Ik[k-1]
+
+            # 4) Thermal states
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+                + (Q_vent[k] + Q_solar[k] + Q_int[k]) / Ci
+            ) * dt
+
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+            # 5) CO2-occupancy
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
+
+            dN   = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+            dc   = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
+            c[k] = c[k-1] + dc
+
+        Q_int[0]   = Q_int[1]
+        Q_vent[0]  = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N,
+             'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar}
+        )
+
 
 
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
