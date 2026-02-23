@@ -2674,6 +2674,148 @@ class TiTmCn2R2C_summer_V10(DarkGreyModel):
         )
 
 
+class TiTmCn2R2C_summer_V11(DarkGreyModel):
+    """
+    Same as V10 but replaces the EMA-based N estimator with a scalar
+    Kalman Filter (KF) that optimally fuses the CO2 mass-balance model
+    with noisy CO2 measurements.
+
+    New Parameters
+    --------------
+    sigma_N : Process noise std dev for occupancy [persons] — how fast N can change
+    sigma_c : CO2 measurement noise std dev [ppm]    — sensor accuracy
+    P0_N    : Initial state variance for N [persons²]
+    """
+
+    def model(self, params, X):
+        num_rec = len(X["Ta"])
+
+        # ── Allocate states ───────────────────────────────────────────────
+        Ti      = np.zeros(num_rec)
+        Tm      = np.zeros(num_rec)
+        c       = np.zeros(num_rec)
+        N       = np.zeros(num_rec)
+        Q_int   = np.zeros(num_rec)
+        Q_vent  = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+        P_kf    = np.zeros(num_rec)   # KF state variance (for diagnostics)
+        K_kf    = np.zeros(num_rec)   # Kalman gain      (for diagnostics)
+
+        # ── Initial conditions ────────────────────────────────────────────
+        Ti[0] = params["Ti0"]
+        Tm[0] = params["Tm0"]
+        c[0]  = params["c0"]
+        N[0]  = params["N0"]
+
+        # ── Physical parameters ───────────────────────────────────────────
+        Ci            = params["Ci"].value
+        Cm            = params["Cm"].value
+        Rim           = params["Rim"].value
+        Rout          = params["Rout"].value
+        q_equip_var   = params["q_equip_var"].value
+        q_equip_const = params["q_equip_const"].value
+        V             = params["V"].value
+        S             = params["S"].value
+        A             = params["A"].value
+        c_out         = params["c_out"].value
+        rho_air       = params["rho_air"].value
+        cp_air        = params["cp_air"].value
+        g             = params["g"].value
+        Met           = params["Met"].value
+        G_base        = params["G_base"].value
+        alpha_lat     = params["alpha_lat"].value
+
+        G      = G_base * Met
+        q_sens = Met * (100.0 - alpha_lat)
+
+        # ── Kalman Filter parameters ──────────────────────────────────────
+        sigma_N = params["sigma_N"].value   # process noise [persons/step]
+        sigma_c = params["sigma_c"].value   # measurement noise [ppm]
+        Q_kf    = sigma_N ** 2              # process noise variance
+        R_kf    = sigma_c ** 2              # measurement noise variance
+
+        # KF initial state
+        N_hat   = float(params["N0"])
+        P       = params["P0_N"].value
+        P_kf[0] = P
+
+        # ── Inputs ────────────────────────────────────────────────────────
+        Ta     = X["Ta"]
+        Tsup   = X["Tsup"]
+        qv     = X["qv"]
+        Ik     = X["Ik"]
+        c_meas = X["c"]
+
+        dt = self.rec_duration
+
+        for k in range(1, num_rec):
+
+            # ── (1) Ventilation heat ──────────────────────────────────────
+            Q_vent[k] = rho_air * cp_air * (qv[k-1] / 3600) * (Tsup[k-1] - Ti[k-1])
+
+            # ── (2) Internal gains ────────────────────────────────────────
+            Q_int[k] = (q_sens + q_equip_var) * N[k-1] + q_equip_const * S
+
+            # ── (3) Solar gains ───────────────────────────────────────────
+            Q_solar[k] = g * A * Ik[k-1]
+
+            # ── (4) Thermal states (unchanged) ────────────────────────────
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim * Ci)
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+                + (Q_vent[k] + Q_solar[k] + Q_int[k]) / Ci
+            ) * dt
+            dTm = ((Ti[k-1] - Tm[k-1]) / (Rim * Cm)) * dt
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+            # ── (5) Kalman Filter for N ───────────────────────────────────
+
+            # PREDICT
+            N_hat_pred = N_hat           # random walk: best guess = last estimate
+            P_pred     = P + Q_kf        # variance grows without new measurements
+
+            # Predict CO2 using the mass balance at N_hat_pred
+            c_pred = c[k-1] + (
+                (G / V) * 1e6 * N_hat_pred
+                - (qv[k] / V) * (c[k-1] - c_out)
+            ) * dt
+
+            # Measurement Jacobian: H = d(c_pred)/d(N) = (G/V)*1e6*dt
+            H = (G / V) * 1e6 * dt
+
+            # UPDATE
+            z    = c_meas[k] - c_pred       # innovation: real CO2 - predicted CO2
+            S_kf = H * P_pred * H + R_kf    # innovation covariance
+            K    = P_pred * H / S_kf        # Kalman gain
+
+            N_hat = N_hat_pred + K * z      # corrected N estimate
+            P     = (1.0 - K * H) * P_pred # updated state variance
+
+            N[k]    = max(0.0, N_hat)       # physical constraint: N >= 0
+            P_kf[k] = P
+            K_kf[k] = K
+
+            # ── (6) CO2 state update with KF-estimated N ──────────────────
+            dc   = (
+                (G / V) * 1e6 * N[k]
+                - (qv[k] / V) * (c[k-1] - c_out)
+            ) * dt
+            c[k] = c[k-1] + dc
+
+        Q_int[0]   = Q_int[1]
+        Q_vent[0]  = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {
+                "Ti": Ti, "Tm": Tm, "c": c, "N": N,
+                "Q_int": Q_int, "Q_vent": Q_vent, "Q_solar": Q_solar,
+                "P_kf": P_kf, "K_kf": K_kf,
+            },
+        )
+
 
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
     """
