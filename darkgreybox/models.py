@@ -2431,7 +2431,104 @@ class TiTmCn2R2C_summer_V9(DarkGreyModel):
         n_bsplines = len(phi)
 
         # ── NEW: neighbour resistances (auto-detect from params) ──────────
-        neigh_keys = sorte
+        neigh_keys = sorted(
+            [k for k in params if k.startswith('Rneigh_')],
+            key=lambda x: int(x.split('_')[1])
+        )
+        M      = len(neigh_keys)
+        Rneigh = np.array([params[k].value for k in neigh_keys])  # shape (M,)
+
+        # Neighbour temperature time series: shape (num_rec, M)
+        T_neigh_arr = (
+            np.column_stack([X[f'T_neigh_{j+1}'] for j in range(M)])
+            if M > 0 else None
+        )
+
+        # ── Inputs (unchanged from V4) ────────────────────────────────────
+        Ta      = X['Ta']
+        Tsup    = X['Tsup']
+        qv      = X['qv']
+        Ik      = X['Ik']
+        c_meas  = X['c']
+        theta_z = X['theta_z']
+        gamma_s = X['gamma_s']
+
+        # B-spline basis functions: shape (num_rec, n_bsplines)
+        bsplines = np.column_stack([X[f'bs_{i}'] for i in range(n_bsplines)])
+
+        dt = self.rec_duration
+
+        # ── Pre-compute AOI and IAM outside loop (unchanged) ─────────────
+        theta_z_array = 90 - np.array(theta_z)
+        gamma_s_array = np.array(gamma_s)
+
+        aoi_deg_all = pvlib.irradiance.aoi(
+            surface_tilt=90,
+            surface_azimuth=gamma_g,
+            solar_zenith=theta_z_array,
+            solar_azimuth=gamma_s_array
+        )
+        iam_all = pvlib.iam.physical(aoi_deg_all, n=n, K=K, L=L)
+
+        # Time-varying solar aperture: shape (num_rec,)
+        g_t = bsplines @ phi
+
+        # ── Main simulation loop ──────────────────────────────────────────
+        for k in range(1, num_rec):
+
+            # 1) Ventilation heat
+            Q_vent[k] = rho_air * cp_air * (qv[k-1] / 3600) * (Tsup[k-1] - Ti[k-1])
+
+            # 2) Internal gains
+            Q_int[k] = (q_pers + q_equip_var) * N[k-1] + q_equip_const * S
+
+            # 3) Total solar gain (B-spline aperture + IAM, unchanged)
+            Q_solar[k] = g_t[k-1] * iam_all[k-1] * A * Ik[k-1]
+
+            # 4) NEW: inter-zone heat from all neighbour rooms → Ti only
+            if M > 0:
+                Q_neigh[k] = np.sum(
+                    (T_neigh_arr[k-1, :] - Ti[k-1]) / Rneigh
+                )
+
+            # 5) Thermal states
+            #
+            # Ti receives: f_sol * Q_solar  +  full Q_neigh
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim  * Ci)
+                + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+                + (Q_vent[k] + Q_int[k] + f_sol * Q_solar[k] + Q_neigh[k]) / Ci
+            ) * dt
+
+            # Tm receives: (1 - f_sol) * Q_solar  (no neighbour term)
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)
+                + (1.0 - f_sol) * Q_solar[k] / Cm
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+            # 6) CO2 / occupancy (unchanged)
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
+            dN   = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+            dc   = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
+            c[k] = c[k-1] + dc
+
+        Q_int[0]   = Q_int[1]
+        Q_vent[0]  = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+        Q_neigh[0] = Q_neigh[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N,
+             'Q_int': Q_int, 'Q_vent': Q_vent,
+             'Q_solar': Q_solar, 'Q_neigh': Q_neigh}
+        )
+
 
 
 
