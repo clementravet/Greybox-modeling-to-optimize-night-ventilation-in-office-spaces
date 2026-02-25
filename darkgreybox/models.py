@@ -3057,6 +3057,191 @@ class TiTmCn2R2C_summer_V12(DarkGreyModel):
         )
 
 
+class TiTmTfCn3R3C_summer_V13(DarkGreyModel):
+    """
+    Grey-box model of one room with:
+      - 3R3C thermal model (Ti, Tm, Tf)
+          Ti : indoor air temperature
+          Tm : slow structural mass (walls, slab)
+          Tf : fast interior mass (furniture, ceiling, fittings)
+      - Ventilation via q_v (m3/h), solar and internal gains
+      - CO2-based grey-box occupancy sub-model
+      - Full multivariate Kalman Filter on [Ti, Tm, Tf, N]
+
+    States:  Ti, Tm, Tf, c, N
+    Inputs:  Ta, Tsup, qv, Ik, c (CO2 meas), Ti_meas
+    New vs V12: Rf, Cf, sigma_Tf, Tf0, P0_Tf
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # ── Allocate ──────────────────────────────────────────────────────
+        Ti      = np.zeros(num_rec)
+        Tm      = np.zeros(num_rec)
+        Tf      = np.zeros(num_rec)
+        c       = np.zeros(num_rec)
+        N       = np.zeros(num_rec)
+        Q_int   = np.zeros(num_rec)
+        Q_vent  = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+        z_Ti    = np.zeros(num_rec)
+        S_Ti    = np.ones(num_rec)
+
+        # ── Initial conditions ────────────────────────────────────────────
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        Tf[0] = params['Tf0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # ── Physical parameters ───────────────────────────────────────────
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        Rf            = params['Rf'].value          # ← NEW: fast mass resistance
+        Cf            = params['Cf'].value          # ← NEW: fast mass capacitance
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        A             = params['A'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        g             = params['g'].value
+        Met           = params['Met'].value
+        G_base        = params['G_base'].value
+        alpha_lat     = params['alpha_lat'].value
+
+        G      = G_base * Met
+        q_sens = Met * (100.0 - alpha_lat)
+
+        # ── KF noise parameters ───────────────────────────────────────────
+        sigma_Ti      = params['sigma_Ti'].value
+        sigma_Tm      = params['sigma_Tm'].value
+        sigma_Tf      = params['sigma_Tf'].value    # ← NEW
+        sigma_N       = params['sigma_N'].value
+        sigma_Ti_meas = params['sigma_Ti_meas'].value
+        sigma_c       = params['sigma_c'].value
+
+        # Process noise covariance (4x4 diagonal)
+        Q_mat = np.diag([sigma_Ti**2, sigma_Tm**2, sigma_Tf**2, sigma_N**2])
+
+        # ── KF initial state and covariance (4D) ─────────────────────────
+        x_hat = np.array([Ti[0], Tm[0], Tf[0], float(params['N0'])])
+        P     = np.diag([params['P0_Ti'].value,
+                         params['P0_Tm'].value,
+                         params['P0_Tf'].value,     # ← NEW
+                         params['P0_N'].value])
+        I4    = np.eye(4)
+
+        # ── Inputs → numpy ────────────────────────────────────────────────
+        Ta      = np.asarray(X['Ta'],      dtype=float)
+        Tsup    = np.asarray(X['Tsup'],    dtype=float)
+        qv      = np.asarray(X['qv'],      dtype=float)
+        Ik      = np.asarray(X['Ik'],      dtype=float)
+        c_meas  = np.asarray(X['c'],       dtype=float)
+        Ti_meas = np.asarray(X['Ti_meas'], dtype=float)
+
+        dt = self.rec_duration
+
+        # ── Precompute scalars ────────────────────────────────────────────
+        cp_rho_3600 = rho_air * cp_air / 3600.0
+        gA          = g * A
+        GV_1e6      = (G / V) * 1e6
+        q_int_N     = q_sens + q_equip_var
+        q_int_const = q_equip_const * S
+
+        # ── F is constant — precompute once ──────────────────────────────
+        # State order: [Ti, Tm, Tf, N]
+        # Ti gains flux from Tm (via Rim), Ta (via Rout), AND Tf (via Rf)
+        # Tf gains flux from Ti only (via Rf)
+        F = np.array([
+            [1.0 - dt/(Rim*Ci) - dt/(Rout*Ci) - dt/(Rf*Ci),
+                   dt/(Rim*Ci),
+                   dt/(Rf*Ci),
+                   q_int_N * dt / Ci],
+            [dt/(Rim*Cm),
+             1.0 - dt/(Rim*Cm),
+             0.0,
+             0.0],
+            [dt/(Rf*Cf),
+             0.0,
+             1.0 - dt/(Rf*Cf),
+             0.0],
+            [0.0, 0.0, 0.0, 1.0]
+        ])
+        FT = F.T
+
+        # ── Measurement constants ─────────────────────────────────────────
+        # H_Ti  = [1, 0, 0, 0] → K = P[:,0] / (P[0,0] + R_Ti)
+        # H_c   = [0, 0, 0, hc3] → K = P[:,3]*hc3 / (hc3²*P[3,3] + R_c)
+        R_Ti = sigma_Ti_meas ** 2
+        hc3  = GV_1e6 * dt          # H_c non-zero element (now index 3)
+        R_c  = sigma_c ** 2
+
+        # ── Main loop ─────────────────────────────────────────────────────
+        for k in range(1, num_rec):
+
+            Q_vent_k  = cp_rho_3600 * qv[k-1] * (Tsup[k-1] - x_hat[0])
+            Q_solar_k = gA * Ik[k-1]
+            Q_vent[k]  = Q_vent_k
+            Q_solar[k] = Q_solar_k
+
+            # Forcing: only Ti (index 0) receives external inputs
+            b0 = (Q_vent_k + Q_solar_k + q_int_const) * dt / Ci
+
+            # ── PREDICT ───────────────────────────────────────────────────
+            x_pred    = F @ x_hat
+            x_pred[0] += b0
+            P_pred    = F @ P @ FT + Q_mat
+
+            # ── UPDATE 1: Ti measurement — H=[1,0,0,0] ───────────────────
+            S_Ti_k = P_pred[0, 0] + R_Ti
+            K_Ti   = P_pred[:, 0] / S_Ti_k
+            z_Ti_k = Ti_meas[k] - x_pred[0]
+
+            x_hat = x_pred + K_Ti * z_Ti_k
+            P     = P_pred - np.outer(K_Ti, P_pred[0, :])
+
+            z_Ti[k] = z_Ti_k
+            S_Ti[k] = S_Ti_k
+
+            # ── UPDATE 2: CO2 measurement — H=[0,0,0,hc3] ────────────────
+            c_pred_val = c[k-1] + (GV_1e6 * x_hat[3]
+                                   - (qv[k] / V) * (c[k-1] - c_out)) * dt
+            S_c  = hc3 * hc3 * P[3, 3] + R_c
+            K_c  = P[:, 3] * (hc3 / S_c)
+            z_c  = c_meas[k] - c_pred_val
+
+            x_hat += K_c * z_c
+            P     -= np.outer(K_c, hc3 * P[3, :])
+
+            # ── Store ─────────────────────────────────────────────────────
+            Ti[k]    = x_hat[0]
+            Tm[k]    = x_hat[1]
+            Tf[k]    = x_hat[2]
+            N[k]     = max(0.0, x_hat[3])
+            Q_int[k] = q_int_N * N[k] + q_int_const
+
+            dc   = (GV_1e6 * N[k] - (qv[k] / V) * (c[k-1] - c_out)) * dt
+            c[k] = c[k-1] + dc
+
+        Q_int[0]   = Q_int[1]
+        Q_vent[0]  = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+        z_Ti[0]    = z_Ti[1]
+        S_Ti[0]    = S_Ti[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'Tf': Tf, 'c': c, 'N': N,
+             'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar,
+             'z_Ti': z_Ti, 'S_Ti': S_Ti}
+        )
+
 
 
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
