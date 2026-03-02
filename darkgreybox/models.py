@@ -3246,12 +3246,14 @@ class TiTmTfCn3R3C_summer_V13(DarkGreyModel):
 class TiTmCn2R2C_summer_V14(DarkGreyModel):
     """
     Grey-box model combining:
-      - V9  : B-spline solar aperture, solar split (f_sol), neighbour zones
-      - V10 : Met-based Q_int (q_sens = Met*(100-alpha_lat))
-      - V11 : Scalar Kalman Filter for N estimation (replaces EMA/alpha)
+      - V9 fully intact (B-splines, solar split f_sol, neighbour zones)
+      - V11 scalar Kalman Filter for N (replaces EMA / alpha parameter)
+
+    Only change vs V9: occupancy estimation block.
 
     States:  Ti, Tm, c, N
-    New vs V9: Met, G_base, alpha_lat replace q_pers; KF replaces alpha
+    Removed vs V9: alpha
+    Added   vs V9: sigma_N, sigma_c, P0_N
     """
 
     def model(self, params, X):
@@ -3273,16 +3275,18 @@ class TiTmCn2R2C_summer_V14(DarkGreyModel):
         c[0]  = params['c0']
         N[0]  = params['N0']
 
-        # ── Physical parameters (unchanged from V9) ───────────────────────
+        # ── Parameters (all unchanged from V9) ────────────────────────────
         Ci            = params['Ci'].value
         Cm            = params['Cm'].value
         Rim           = params['Rim'].value
         Rout          = params['Rout'].value
+        q_pers        = params['q_pers'].value
         q_equip_var   = params['q_equip_var'].value
         q_equip_const = params['q_equip_const'].value
         V             = params['V'].value
         S             = params['S'].value
         A             = params['A'].value
+        G             = params['G'].value
         c_out         = params['c_out'].value
         rho_air       = params['rho_air'].value
         cp_air        = params['cp_air'].value
@@ -3292,17 +3296,9 @@ class TiTmCn2R2C_summer_V14(DarkGreyModel):
         L             = params['L'].value
         f_sol         = params['f_sol'].value
 
-        # ── NEW (V10): Met-based internal gains ───────────────────────────
-        Met       = params['Met'].value        # fixed = 1.2
-        G_base    = params['G_base'].value     # fixed = 0.016 m³/h/person
-        alpha_lat = params['alpha_lat'].value  # fitted ~35-45 W/person
-
-        G      = G_base * Met                  # effective CO2 emission rate
-        q_sens = Met * (100.0 - alpha_lat)     # sensible heat per person [W]
-
-        # ── NEW (V11): Scalar KF parameters for N ─────────────────────────
-        sigma_N = params['sigma_N'].value      # process noise [persons/step]
-        sigma_c = params['sigma_c'].value      # CO2 measurement noise [ppm]
+        # ── NEW: scalar KF parameters for N (replaces alpha) ─────────────
+        sigma_N = params['sigma_N'].value   # process noise [persons/step]
+        sigma_c = params['sigma_c'].value   # CO2 measurement noise [ppm]
         Q_kf    = sigma_N ** 2
         R_kf    = sigma_c ** 2
 
@@ -3313,8 +3309,8 @@ class TiTmCn2R2C_summer_V14(DarkGreyModel):
         # ── B-spline coefficients (unchanged from V9) ─────────────────────
         phi_names = ['phi_a','phi_b','phi_c','phi_d','phi_e',
                      'phi_f','phi_g','phi_h','phi_i','phi_j']
-        phi       = np.array([params[name].value for name in phi_names])
-        bsplines  = np.column_stack([X[f'bs_{i}'] for i in range(len(phi))])
+        phi      = np.array([params[name].value for name in phi_names])
+        bsplines = np.column_stack([X[f'bs_{i}'] for i in range(len(phi))])
 
         # ── Neighbour resistances (unchanged from V9) ─────────────────────
         neigh_keys = sorted(
@@ -3328,7 +3324,7 @@ class TiTmCn2R2C_summer_V14(DarkGreyModel):
             if M > 0 else None
         )
 
-        # ── Inputs ────────────────────────────────────────────────────────
+        # ── Inputs (unchanged from V9) ────────────────────────────────────
         Ta      = np.asarray(X['Ta'],      dtype=float)
         Tsup    = np.asarray(X['Tsup'],    dtype=float)
         qv      = np.asarray(X['qv'],      dtype=float)
@@ -3352,20 +3348,20 @@ class TiTmCn2R2C_summer_V14(DarkGreyModel):
         # ── Main loop ─────────────────────────────────────────────────────
         for k in range(1, num_rec):
 
-            # 1) Ventilation heat
+            # 1) Ventilation heat — unchanged
             Q_vent[k] = rho_air * cp_air * (qv[k-1] / 3600) * (Tsup[k-1] - Ti[k-1])
 
-            # 2) Internal gains — V10 formula
-            Q_int[k] = (q_sens + q_equip_var) * N[k-1] + q_equip_const * S
+            # 2) Internal gains — unchanged (V9 formula)
+            Q_int[k] = (q_pers + q_equip_var) * N[k-1] + q_equip_const * S
 
-            # 3) Solar gain with B-spline aperture + IAM — V9
+            # 3) Solar gain with B-spline aperture + IAM — unchanged
             Q_solar[k] = g_t[k-1] * iam_all[k-1] * A * Ik[k-1]
 
-            # 4) Neighbour inter-zone heat — V9
+            # 4) Neighbour inter-zone heat — unchanged
             if M > 0:
                 Q_neigh[k] = np.sum((T_neigh_arr[k-1, :] - Ti[k-1]) / Rneigh)
 
-            # 5) Thermal states — V9 with solar split
+            # 5) Thermal states with solar split — unchanged
             dTi = (
                 (Tm[k-1] - Ti[k-1]) / (Rim  * Ci)
                 + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
@@ -3381,30 +3377,31 @@ class TiTmCn2R2C_summer_V14(DarkGreyModel):
             Ti[k] = Ti[k-1] + dTi
             Tm[k] = Tm[k-1] + dTm
 
-            # 6) Kalman Filter for N — V11
-            # PREDICT
+            # 6) Kalman Filter for N ── replaces EMA from V9 ──────────────
+
+            # PREDICT: random walk on N
             N_hat_pred = N_hat
             P_pred     = P + Q_kf
 
-            # Predicted CO2 from CO2 mass balance at N_hat_pred
+            # Predicted CO2 at N_hat_pred
             c_pred = c[k-1] + (
                 (G / V) * 1e6 * N_hat_pred
                 - (qv[k] / V) * (c[k-1] - c_out)
             ) * dt
 
-            # Measurement Jacobian H = d(c_pred)/d(N)
+            # Measurement Jacobian: H = d(c_pred)/d(N)
             H = (G / V) * 1e6 * dt
 
             # UPDATE
-            z     = c_meas[k] - c_pred
-            S_kf  = H * P_pred * H + R_kf
-            K_gain = P_pred * H / S_kf
+            z      = c_meas[k] - c_pred        # innovation
+            S_kf   = H * P_pred * H + R_kf     # innovation covariance
+            K_gain = P_pred * H / S_kf          # Kalman gain
 
             N_hat = N_hat_pred + K_gain * z
             P     = (1.0 - K_gain * H) * P_pred
             N[k]  = max(0.0, N_hat)
 
-            # 7) CO2 state update
+            # 7) CO2 state update — unchanged
             dc   = ((G / V) * 1e6 * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
             c[k] = c[k-1] + dc
 
@@ -3419,6 +3416,7 @@ class TiTmCn2R2C_summer_V14(DarkGreyModel):
              'Q_int': Q_int, 'Q_vent': Q_vent,
              'Q_solar': Q_solar, 'Q_neigh': Q_neigh}
         )
+
 
 
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
