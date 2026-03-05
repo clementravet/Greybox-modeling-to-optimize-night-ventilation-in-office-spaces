@@ -3418,10 +3418,10 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
     Ik              : Irradiance (W/m²)
     c               : CO2 concentration (ppm) [measured]
     Ti_meas         : Measured indoor temperature (°C)
-    theta_z         : Solar elevation angle (°)          [NEW vs V12]
-    gamma_s         : Solar azimuth angle (°)            [NEW vs V12]
-    bs_0 … bs_9     : B-spline basis functions           [NEW vs V12]
-    T_neigh_1 … _M  : Neighbour room temperatures (°C)  [NEW vs V12]
+    theta_z         : Solar elevation angle (°)
+    gamma_s         : Solar azimuth angle (°)
+    bs_0 … bs_9     : B-spline basis functions
+    T_neigh_1 … _M  : Neighbour room temperatures (°C)
 
     Parameters (params)
     -------------------
@@ -3434,17 +3434,16 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
     V                 : Room volume (m³)
     S                 : Room surface area (m²)
     A                 : Window area (m²)
-    G_base            : Base CO2 emission per person (m³/h/person), fixed=0.016
-    Met               : Metabolic rate (Met), fixed=1.2
+    G                 : CO2 emission per person (m³/h/person)
     c_out             : Outdoor CO2 fraction (ppm)
-    alpha_lat         : Latent heat fraction per person (–)
+    q_pers            : Sensible heat gain per person (W/person)
     q_equip_var       : Equipment heat gain per person (W/person)
     q_equip_const     : Constant equipment heat gain (W/m²)
-    f_sol             : Solar fraction to Ti node [0,1]  [NEW vs V12]
-    phi_a … phi_j     : B-spline solar aperture coefficients [NEW vs V12]
-    gamma_g           : Window surface azimuth (°)       [NEW vs V12]
-    n, K, L           : IAM physical model parameters    [NEW vs V12]
-    Rneigh_1 … _M     : Thermal resistance to each neighbour (K/W) [NEW vs V12]
+    f_sol             : Solar fraction to Ti node [0,1]
+    phi_a … phi_j     : B-spline solar aperture coefficients
+    gamma_g           : Window surface azimuth (°)
+    n, K, L           : IAM physical model parameters
+    Rneigh_1 … _M     : Thermal resistance to each neighbour (K/W)
     sigma_Ti          : Process noise σ for Ti (K/step)
     sigma_Tm          : Process noise σ for Tm (K/step)
     sigma_N           : Process noise σ for N (persons/step)
@@ -3464,7 +3463,7 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
         Q_int   = np.zeros(num_rec)
         Q_vent  = np.zeros(num_rec)
         Q_solar = np.zeros(num_rec)
-        Q_neigh = np.zeros(num_rec)   # NEW vs V12
+        Q_neigh = np.zeros(num_rec)
         z_Ti    = np.zeros(num_rec)
         S_Ti    = np.ones(num_rec)
 
@@ -3479,41 +3478,36 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
         Cm            = params['Cm'].value
         Rim           = params['Rim'].value
         Rout          = params['Rout'].value
+        q_pers        = params['q_pers'].value        # direct param from V9
         q_equip_var   = params['q_equip_var'].value
         q_equip_const = params['q_equip_const'].value
         V             = params['V'].value
         S             = params['S'].value
         A             = params['A'].value
+        G             = params['G'].value             # direct param from V9
         c_out         = params['c_out'].value
         rho_air       = params['rho_air'].value
         cp_air        = params['cp_air'].value
-        Met           = params['Met'].value
-        G_base        = params['G_base'].value
-        alpha_lat     = params['alpha_lat'].value
 
-        G      = G_base * Met
-        q_sens = Met * (100.0 - alpha_lat)   # sensible heat per person [W]
+        # ── Solar split + B-spline parameters ────────────────────────────
+        f_sol = params['f_sol'].value
 
-        # ── NEW: solar split fraction ─────────────────────────────────────
-        f_sol = params['f_sol'].value         # share of Q_solar going to Ti
-
-        # ── NEW: B-spline solar aperture parameters ───────────────────────
         phi_names = ['phi_a', 'phi_b', 'phi_c', 'phi_d', 'phi_e',
                      'phi_f', 'phi_g', 'phi_h', 'phi_i', 'phi_j']
-        phi       = np.array([params[name].value for name in phi_names])
+        phi = np.array([params[name].value for name in phi_names])
 
         gamma_g = params['gamma_g'].value
         n_iam   = params['n'].value
         K_iam   = params['K'].value
         L_iam   = params['L'].value
 
-        # ── NEW: neighbour resistances (auto-detect from params) ──────────
+        # ── Neighbour resistances (auto-detect from params) ───────────────
         neigh_keys = sorted(
             [k for k in params if k.startswith('Rneigh_')],
             key=lambda x: int(x.split('_')[1])
         )
         M      = len(neigh_keys)
-        Rneigh = np.array([params[k].value for k in neigh_keys])   # shape (M,)
+        Rneigh = np.array([params[k].value for k in neigh_keys])
 
         T_neigh_arr = (
             np.column_stack([
@@ -3547,11 +3541,11 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
 
         dt = self.rec_duration
 
-        # ── NEW: pre-compute B-spline aperture and IAM (outside loop) ─────
+        # ── Pre-compute B-spline aperture and IAM (outside loop) ──────────
         bsplines = np.column_stack([
             np.asarray(X[f'bs_{i}'], dtype=float) for i in range(len(phi))
         ])
-        g_t = bsplines @ phi                             # shape (num_rec,)
+        g_t = bsplines @ phi
 
         theta_z_array = 90.0 - np.asarray(X['theta_z'], dtype=float)
         gamma_s_array = np.asarray(X['gamma_s'],         dtype=float)
@@ -3567,16 +3561,13 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
         # ── Precompute loop-invariant scalars ─────────────────────────────
         cp_rho_3600    = rho_air * cp_air / 3600.0
         GV_1e6         = (G / V) * 1e6
-        q_int_N        = q_sens + q_equip_var
+        q_int_N        = q_pers + q_equip_var         # heat gain per person
         q_int_const    = q_equip_const * S
-        # NEW: sum of 1/Rneigh — absorbed into F[0,0] so F stays constant
         sum_inv_Rneigh = float(np.sum(1.0 / Rneigh)) if M > 0 else 0.0
 
-        # ── F matrix (constant — depends only on params) ──────────────────
-        # F[0,0] now includes the −Ti·Σ(1/Rneigh) neighbour term   [NEW]
-        # F[1,1] is unchanged; Tm solar forcing handled via b1       [NEW]
+        # ── F matrix (constant) ───────────────────────────────────────────
         F = np.array([
-            [1.0 - dt/( Rim*Ci) - dt/(Rout*Ci) - dt*sum_inv_Rneigh/Ci,
+            [1.0 - dt/(Rim*Ci) - dt/(Rout*Ci) - dt*sum_inv_Rneigh/Ci,
                    dt/(Rim*Ci),
                    q_int_N * dt / Ci],
             [dt/(Rim*Cm),
@@ -3598,29 +3589,25 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
             Q_vent_k  = cp_rho_3600 * qv[k-1] * (Tsup[k-1] - x_hat[0])
             Q_vent[k] = Q_vent_k
 
-            # 2) NEW: Solar gain via B-spline aperture + IAM
+            # 2) Solar gain via B-spline aperture + IAM
             Q_solar_k  = g_t[k-1] * iam_all[k-1] * A * Ik[k-1]
             Q_solar[k] = Q_solar_k
 
-            # 3) NEW: Neighbour heat flux (diagnostic — full ΔT/R form)
-            #    The −Ti·Σ(1/Rneigh) term is already embedded in F[0,0];
-            #    only the Σ(T_neigh/Rneigh) input part enters b0 below.
+            # 3) Neighbour heat flux
             if M > 0:
-                neigh_input   = np.sum(T_neigh_arr[k-1, :] / Rneigh)
-                Q_neigh[k]    = neigh_input - sum_inv_Rneigh * x_hat[0]   # full flux
+                neigh_input = np.sum(T_neigh_arr[k-1, :] / Rneigh)
+                Q_neigh[k]  = neigh_input - sum_inv_Rneigh * x_hat[0]
             else:
-                neigh_input   = 0.0
+                neigh_input = 0.0
 
-            # 4) Input-forcing vector (b[2] = 0, N driven by KF)
-            #    b0 (Ti): vent + f_sol·solar + const + neigh input part
-            #    b1 (Tm): (1−f_sol)·solar                               [NEW split]
+            # 4) Input-forcing scalars
             b0 = (Q_vent_k + f_sol * Q_solar_k + q_int_const + neigh_input) * dt / Ci
-            b1 = (1.0 - f_sol) * Q_solar_k * dt / Cm                    # NEW
+            b1 = (1.0 - f_sol) * Q_solar_k * dt / Cm
 
             # ── PREDICT ───────────────────────────────────────────────────
             x_pred     = F @ x_hat
             x_pred[0] += b0
-            x_pred[1] += b1      # NEW: Tm now also receives solar forcing
+            x_pred[1] += b1
             P_pred     = F @ P @ FT + Q_mat
 
             # ── UPDATE 1: Ti measurement ──────────────────────────────────
@@ -3634,7 +3621,7 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
             z_Ti[k] = z_Ti_k
             S_Ti[k] = S_Ti_k
 
-            # ── UPDATE 2: CO2 measurement ──────────────────────────────────
+            # ── UPDATE 2: CO2 measurement ─────────────────────────────────
             c_pred_val = c[k-1] + (GV_1e6 * x_hat[2]
                                    - (qv[k] / V) * (c[k-1] - c_out)) * dt
             S_c  = hc2 * hc2 * P[2, 2] + R_c
@@ -3653,7 +3640,7 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
             dc   = (GV_1e6 * N[k] - (qv[k] / V) * (c[k-1] - c_out)) * dt
             c[k] = c[k-1] + dc
 
-        # ── Fill step-0 with step-1 (no look-ahead) ───────────────────────
+        # ── Fill step-0 with step-1 ───────────────────────────────────────
         Q_int[0]   = Q_int[1]
         Q_vent[0]  = Q_vent[1]
         Q_solar[0] = Q_solar[1]
@@ -3667,6 +3654,7 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
              'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar,
              'Q_neigh': Q_neigh, 'z_Ti': z_Ti, 'S_Ti': S_Ti}
         )
+
 
 
 
