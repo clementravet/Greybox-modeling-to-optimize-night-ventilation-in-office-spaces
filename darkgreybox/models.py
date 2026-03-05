@@ -3395,6 +3395,279 @@ class TiTmCn2R2C_summer_V14(DarkGreyModel):
         )
 
 
+class TiTmCn2R2C_summer_V15(DarkGreyModel):
+    """
+    Grey-box model combining V12 (multivariate Kalman Filter) with V9 features:
+      - Time-dependent solar aperture via B-splines + IAM          [from V9]
+      - Solar gain split: f_sol → Ti, (1−f_sol) → Tm              [from V9]
+      - Inter-zone heat transfer from M neighbour rooms             [from V9]
+      - Full multivariate Kalman Filter on [Ti, Tm, N]             [from V12]
+
+    States
+    ------
+    Ti  : Indoor air temperature (°C)
+    Tm  : Lumped thermal mass temperature (°C)
+    c   : Indoor CO2 concentration (ppm)
+    N   : Effective occupancy (persons)
+
+    Inputs X
+    --------
+    Ta              : Ambient temperature (°C)
+    Tsup            : Supply air temperature (°C)
+    qv              : Ventilation flow rate (m³/h)
+    Ik              : Irradiance (W/m²)
+    c               : CO2 concentration (ppm) [measured]
+    Ti_meas         : Measured indoor temperature (°C)
+    theta_z         : Solar elevation angle (°)          [NEW vs V12]
+    gamma_s         : Solar azimuth angle (°)            [NEW vs V12]
+    bs_0 … bs_9     : B-spline basis functions           [NEW vs V12]
+    T_neigh_1 … _M  : Neighbour room temperatures (°C)  [NEW vs V12]
+
+    Parameters (params)
+    -------------------
+    Ti0, Tm0, c0, N0  : Initial states
+    Ci                : Air + light capacitance (J/K)
+    Cm                : Thermal mass capacitance (J/K)
+    Rim               : Resistance Ti–Tm (K/W)
+    Rout              : Resistance Ti–Ta (K/W)
+    rho_air, cp_air   : Air density (kg/m³), specific heat (J/kgK)
+    V                 : Room volume (m³)
+    S                 : Room surface area (m²)
+    A                 : Window area (m²)
+    G_base            : Base CO2 emission per person (m³/h/person), fixed=0.016
+    Met               : Metabolic rate (Met), fixed=1.2
+    c_out             : Outdoor CO2 fraction (ppm)
+    alpha_lat         : Latent heat fraction per person (–)
+    q_equip_var       : Equipment heat gain per person (W/person)
+    q_equip_const     : Constant equipment heat gain (W/m²)
+    f_sol             : Solar fraction to Ti node [0,1]  [NEW vs V12]
+    phi_a … phi_j     : B-spline solar aperture coefficients [NEW vs V12]
+    gamma_g           : Window surface azimuth (°)       [NEW vs V12]
+    n, K, L           : IAM physical model parameters    [NEW vs V12]
+    Rneigh_1 … _M     : Thermal resistance to each neighbour (K/W) [NEW vs V12]
+    sigma_Ti          : Process noise σ for Ti (K/step)
+    sigma_Tm          : Process noise σ for Tm (K/step)
+    sigma_N           : Process noise σ for N (persons/step)
+    sigma_Ti_meas     : Ti sensor noise σ (K)  — fixed from spec
+    sigma_c           : CO2 sensor noise σ (ppm) — fixed from spec
+    P0_Ti, P0_Tm, P0_N: Initial state-covariance diagonal entries
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        # ── Allocate ──────────────────────────────────────────────────────
+        Ti      = np.zeros(num_rec)
+        Tm      = np.zeros(num_rec)
+        c       = np.zeros(num_rec)
+        N       = np.zeros(num_rec)
+        Q_int   = np.zeros(num_rec)
+        Q_vent  = np.zeros(num_rec)
+        Q_solar = np.zeros(num_rec)
+        Q_neigh = np.zeros(num_rec)   # NEW vs V12
+        z_Ti    = np.zeros(num_rec)
+        S_Ti    = np.ones(num_rec)
+
+        # ── Initial conditions ────────────────────────────────────────────
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # ── Physical parameters ───────────────────────────────────────────
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        A             = params['A'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        Met           = params['Met'].value
+        G_base        = params['G_base'].value
+        alpha_lat     = params['alpha_lat'].value
+
+        G      = G_base * Met
+        q_sens = Met * (100.0 - alpha_lat)   # sensible heat per person [W]
+
+        # ── NEW: solar split fraction ─────────────────────────────────────
+        f_sol = params['f_sol'].value         # share of Q_solar going to Ti
+
+        # ── NEW: B-spline solar aperture parameters ───────────────────────
+        phi_names = ['phi_a', 'phi_b', 'phi_c', 'phi_d', 'phi_e',
+                     'phi_f', 'phi_g', 'phi_h', 'phi_i', 'phi_j']
+        phi       = np.array([params[name].value for name in phi_names])
+
+        gamma_g = params['gamma_g'].value
+        n_iam   = params['n'].value
+        K_iam   = params['K'].value
+        L_iam   = params['L'].value
+
+        # ── NEW: neighbour resistances (auto-detect from params) ──────────
+        neigh_keys = sorted(
+            [k for k in params if k.startswith('Rneigh_')],
+            key=lambda x: int(x.split('_')[1])
+        )
+        M      = len(neigh_keys)
+        Rneigh = np.array([params[k].value for k in neigh_keys])   # shape (M,)
+
+        T_neigh_arr = (
+            np.column_stack([
+                np.asarray(X[f'T_neigh_{j+1}'], dtype=float) for j in range(M)
+            ])
+            if M > 0 else None
+        )
+
+        # ── KF noise parameters ───────────────────────────────────────────
+        sigma_Ti      = params['sigma_Ti'].value
+        sigma_Tm      = params['sigma_Tm'].value
+        sigma_N       = params['sigma_N'].value
+        sigma_Ti_meas = params['sigma_Ti_meas'].value
+        sigma_c       = params['sigma_c'].value
+
+        Q_mat = np.diag([sigma_Ti**2, sigma_Tm**2, sigma_N**2])
+
+        # ── KF initial state and covariance ───────────────────────────────
+        x_hat = np.array([Ti[0], Tm[0], float(params['N0'])])
+        P     = np.diag([params['P0_Ti'].value,
+                         params['P0_Tm'].value,
+                         params['P0_N'].value])
+
+        # ── Inputs → numpy ────────────────────────────────────────────────
+        Ta      = np.asarray(X['Ta'],      dtype=float)
+        Tsup    = np.asarray(X['Tsup'],    dtype=float)
+        qv      = np.asarray(X['qv'],      dtype=float)
+        Ik      = np.asarray(X['Ik'],      dtype=float)
+        c_meas  = np.asarray(X['c'],       dtype=float)
+        Ti_meas = np.asarray(X['Ti_meas'], dtype=float)
+
+        dt = self.rec_duration
+
+        # ── NEW: pre-compute B-spline aperture and IAM (outside loop) ─────
+        bsplines = np.column_stack([
+            np.asarray(X[f'bs_{i}'], dtype=float) for i in range(len(phi))
+        ])
+        g_t = bsplines @ phi                             # shape (num_rec,)
+
+        theta_z_array = 90.0 - np.asarray(X['theta_z'], dtype=float)
+        gamma_s_array = np.asarray(X['gamma_s'],         dtype=float)
+
+        aoi_deg_all = pvlib.irradiance.aoi(
+            surface_tilt=90,
+            surface_azimuth=gamma_g,
+            solar_zenith=theta_z_array,
+            solar_azimuth=gamma_s_array
+        )
+        iam_all = pvlib.iam.physical(aoi_deg_all, n=n_iam, K=K_iam, L=L_iam)
+
+        # ── Precompute loop-invariant scalars ─────────────────────────────
+        cp_rho_3600    = rho_air * cp_air / 3600.0
+        GV_1e6         = (G / V) * 1e6
+        q_int_N        = q_sens + q_equip_var
+        q_int_const    = q_equip_const * S
+        # NEW: sum of 1/Rneigh — absorbed into F[0,0] so F stays constant
+        sum_inv_Rneigh = float(np.sum(1.0 / Rneigh)) if M > 0 else 0.0
+
+        # ── F matrix (constant — depends only on params) ──────────────────
+        # F[0,0] now includes the −Ti·Σ(1/Rneigh) neighbour term   [NEW]
+        # F[1,1] is unchanged; Tm solar forcing handled via b1       [NEW]
+        F = np.array([
+            [1.0 - dt/( Rim*Ci) - dt/(Rout*Ci) - dt*sum_inv_Rneigh/Ci,
+                   dt/(Rim*Ci),
+                   q_int_N * dt / Ci],
+            [dt/(Rim*Cm),
+             1.0 - dt/(Rim*Cm),
+             0.0],
+            [0.0, 0.0, 1.0]
+        ])
+        FT = F.T
+
+        # ── KF update constants ───────────────────────────────────────────
+        R_Ti = sigma_Ti_meas ** 2
+        hc2  = GV_1e6 * dt
+        R_c  = sigma_c ** 2
+
+        # ── Main loop ─────────────────────────────────────────────────────
+        for k in range(1, num_rec):
+
+            # 1) Ventilation heat flux
+            Q_vent_k  = cp_rho_3600 * qv[k-1] * (Tsup[k-1] - x_hat[0])
+            Q_vent[k] = Q_vent_k
+
+            # 2) NEW: Solar gain via B-spline aperture + IAM
+            Q_solar_k  = g_t[k-1] * iam_all[k-1] * A * Ik[k-1]
+            Q_solar[k] = Q_solar_k
+
+            # 3) NEW: Neighbour heat flux (diagnostic — full ΔT/R form)
+            #    The −Ti·Σ(1/Rneigh) term is already embedded in F[0,0];
+            #    only the Σ(T_neigh/Rneigh) input part enters b0 below.
+            if M > 0:
+                neigh_input   = np.sum(T_neigh_arr[k-1, :] / Rneigh)
+                Q_neigh[k]    = neigh_input - sum_inv_Rneigh * x_hat[0]   # full flux
+            else:
+                neigh_input   = 0.0
+
+            # 4) Input-forcing vector (b[2] = 0, N driven by KF)
+            #    b0 (Ti): vent + f_sol·solar + const + neigh input part
+            #    b1 (Tm): (1−f_sol)·solar                               [NEW split]
+            b0 = (Q_vent_k + f_sol * Q_solar_k + q_int_const + neigh_input) * dt / Ci
+            b1 = (1.0 - f_sol) * Q_solar_k * dt / Cm                    # NEW
+
+            # ── PREDICT ───────────────────────────────────────────────────
+            x_pred     = F @ x_hat
+            x_pred[0] += b0
+            x_pred[1] += b1      # NEW: Tm now also receives solar forcing
+            P_pred     = F @ P @ FT + Q_mat
+
+            # ── UPDATE 1: Ti measurement ──────────────────────────────────
+            S_Ti_k = P_pred[0, 0] + R_Ti
+            K_Ti   = P_pred[:, 0] / S_Ti_k
+            z_Ti_k = Ti_meas[k] - x_pred[0]
+
+            x_hat = x_pred + K_Ti * z_Ti_k
+            P     = P_pred - np.outer(K_Ti, P_pred[0, :])
+
+            z_Ti[k] = z_Ti_k
+            S_Ti[k] = S_Ti_k
+
+            # ── UPDATE 2: CO2 measurement ──────────────────────────────────
+            c_pred_val = c[k-1] + (GV_1e6 * x_hat[2]
+                                   - (qv[k] / V) * (c[k-1] - c_out)) * dt
+            S_c  = hc2 * hc2 * P[2, 2] + R_c
+            K_c  = P[:, 2] * (hc2 / S_c)
+            z_c  = c_meas[k] - c_pred_val
+
+            x_hat += K_c * z_c
+            P     -= np.outer(K_c, hc2 * P[2, :])
+
+            # ── Store ─────────────────────────────────────────────────────
+            Ti[k]    = x_hat[0]
+            Tm[k]    = x_hat[1]
+            N[k]     = max(0.0, x_hat[2])
+            Q_int[k] = q_int_N * N[k] + q_int_const
+
+            dc   = (GV_1e6 * N[k] - (qv[k] / V) * (c[k-1] - c_out)) * dt
+            c[k] = c[k-1] + dc
+
+        # ── Fill step-0 with step-1 (no look-ahead) ───────────────────────
+        Q_int[0]   = Q_int[1]
+        Q_vent[0]  = Q_vent[1]
+        Q_solar[0] = Q_solar[1]
+        Q_neigh[0] = Q_neigh[1]
+        z_Ti[0]    = z_Ti[1]
+        S_Ti[0]    = S_Ti[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N,
+             'Q_int': Q_int, 'Q_vent': Q_vent, 'Q_solar': Q_solar,
+             'Q_neigh': Q_neigh, 'z_Ti': z_Ti, 'S_Ti': S_Ti}
+        )
+
 
 
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
