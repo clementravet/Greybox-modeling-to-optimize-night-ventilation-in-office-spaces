@@ -3805,6 +3805,167 @@ class TiTmCn2R2C_summer_V15(DarkGreyModel):
         )
 
 
+class TiTmCn2R2C_summer_V16(DarkGreyModel):
+    """
+    KF Grey-box model for dual-facade room (West + North):
+    - Two solar facades with independent B-spline apertures
+    - Dual-sensor room (averaged Ti, summed qv, averaged CO2)
+    - No inter-zone neighbours
+    - Multivariate Kalman Filter on [Ti, Tm, N]
+    """
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        Ti           = np.zeros(num_rec)
+        Tm           = np.zeros(num_rec)
+        c            = np.zeros(num_rec)
+        N            = np.zeros(num_rec)
+        Q_int        = np.zeros(num_rec)
+        Q_vent       = np.zeros(num_rec)
+        Q_solar_west = np.zeros(num_rec)
+        Q_solar_north= np.zeros(num_rec)
+        z_Ti         = np.zeros(num_rec)
+        S_Ti         = np.ones(num_rec)
+
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        q_pers        = params['q_pers'].value
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        A_west        = params['A_west'].value
+        A_north       = params['A_north'].value
+        G             = params['G'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        f_sol         = params['f_sol'].value
+        gamma_g_west  = params['gamma_g_west'].value
+        gamma_g_north = params['gamma_g_north'].value
+        n_iam = params['n'].value
+        K_iam = params['K'].value
+        L_iam = params['L'].value
+
+        phi_west  = np.array([params[f'phi_{x}'].value   for x in 'abcdefghij'])
+        phi_north = np.array([params[f'phi_{x}_n'].value for x in 'abcdefghij'])
+
+        sigma_Ti      = params['sigma_Ti'].value
+        sigma_Tm      = params['sigma_Tm'].value
+        sigma_N       = params['sigma_N'].value
+        sigma_Ti_meas = params['sigma_Ti_meas'].value
+        sigma_c       = params['sigma_c'].value
+
+        Q_mat = np.diag([sigma_Ti**2, sigma_Tm**2, sigma_N**2])
+        x_hat = np.array([Ti[0], Tm[0], float(params['N0'])])
+        P     = np.diag([params['P0_Ti'].value,
+                         params['P0_Tm'].value,
+                         params['P0_N'].value])
+
+        Ta      = np.asarray(X['Ta'],       dtype=float)
+        Tsup    = np.asarray(X['Tsup'],     dtype=float)
+        qv      = np.asarray(X['qv'],       dtype=float)
+        Ik      = np.asarray(X['Ik'],       dtype=float)
+        c_meas  = np.asarray(X['c'],        dtype=float)
+        Ti_meas = np.asarray(X['Ti_meas'],  dtype=float)
+        dt      = self.rec_duration
+
+        # Pre-compute B-splines and solar geometry outside loop
+        bsplines      = np.column_stack([np.asarray(X[f'bs_{i}'], dtype=float)
+                                         for i in range(len(phi_west))])
+        g_t_west      = bsplines @ phi_west
+        g_t_north     = bsplines @ phi_north
+
+        theta_z_arr   = 90.0 - np.asarray(X['theta_z'], dtype=float)
+        gamma_s_arr   = np.asarray(X['gamma_s'], dtype=float)
+
+        iam_west_all  = pvlib.iam.physical(
+            pvlib.irradiance.aoi(90, gamma_g_west,  theta_z_arr, gamma_s_arr),
+            n=n_iam, K=K_iam, L=L_iam)
+        iam_north_all = pvlib.iam.physical(
+            pvlib.irradiance.aoi(90, gamma_g_north, theta_z_arr, gamma_s_arr),
+            n=n_iam, K=K_iam, L=L_iam)
+
+        # Loop-invariant scalars
+        cp_rho_3600 = rho_air * cp_air / 3600.0
+        GV_1e6      = (G / V) * 1e6
+        q_int_N     = q_pers + q_equip_var
+        q_int_const = q_equip_const * S
+
+        # Constant F matrix (no neighbour term)
+        F = np.array([
+            [1.0 - dt/(Rim*Ci) - dt/(Rout*Ci),  dt/(Rim*Ci),  q_int_N*dt/Ci],
+            [dt/(Rim*Cm),                         1.0 - dt/(Rim*Cm), 0.0],
+            [0.0, 0.0, 1.0]
+        ])
+        FT   = F.T
+        R_Ti = sigma_Ti_meas ** 2
+        hc2  = GV_1e6 * dt
+        R_c  = sigma_c ** 2
+
+        for k in range(1, num_rec):
+            Q_vent_k  = cp_rho_3600 * qv[k-1] * (Tsup[k-1] - x_hat[0])
+            Q_vent[k] = Q_vent_k
+
+            Q_sw  = g_t_west[k-1]  * iam_west_all[k-1]  * A_west  * Ik[k-1]
+            Q_sn  = g_t_north[k-1] * iam_north_all[k-1] * A_north * Ik[k-1]
+            Q_solar_west[k]  = Q_sw
+            Q_solar_north[k] = Q_sn
+            Q_sol_total = Q_sw + Q_sn
+
+            b0 = (Q_vent_k + f_sol * Q_sol_total + q_int_const) * dt / Ci
+            b1 = (1.0 - f_sol) * Q_sol_total * dt / Cm
+
+            # Predict
+            x_pred     = F @ x_hat
+            x_pred[0] += b0
+            x_pred[1] += b1
+            P_pred     = F @ P @ FT + Q_mat
+
+            # Update 1: Ti measurement
+            S_Ti_k  = P_pred[0, 0] + R_Ti
+            K_Ti    = P_pred[:, 0] / S_Ti_k
+            z_Ti_k  = Ti_meas[k] - x_pred[0]
+            x_hat   = x_pred + K_Ti * z_Ti_k
+            P       = P_pred - np.outer(K_Ti, P_pred[0, :])
+            z_Ti[k] = z_Ti_k
+            S_Ti[k] = S_Ti_k
+
+            # Update 2: CO2 measurement
+            c_pred_val = c[k-1] + (GV_1e6 * x_hat[2]
+                                   - (qv[k] / V) * (c[k-1] - c_out)) * dt
+            S_c   = hc2 * hc2 * P[2, 2] + R_c
+            K_c   = P[:, 2] * (hc2 / S_c)
+            x_hat += K_c * (c_meas[k] - c_pred_val)
+            P     -= np.outer(K_c, hc2 * P[2, :])
+
+            Ti[k]    = x_hat[0]
+            Tm[k]    = x_hat[1]
+            N[k]     = max(0.0, x_hat[2])
+            Q_int[k] = q_int_N * N[k] + q_int_const
+            c[k]     = c[k-1] + (GV_1e6 * N[k] - (qv[k] / V) * (c[k-1] - c_out)) * dt
+
+        for arr in [Q_int, Q_vent, Q_solar_west, Q_solar_north, z_Ti]:
+            arr[0] = arr[1]
+        S_Ti[0] = S_Ti[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N,
+             'Q_int': Q_int, 'Q_vent': Q_vent,
+             'Q_solar_west': Q_solar_west, 'Q_solar_north': Q_solar_north,
+             'Q_solar': Q_solar_west + Q_solar_north,
+             'z_Ti': z_Ti, 'S_Ti': S_Ti}
+        )
+
+
 
 
 class TiTmxvCn2R2C_winter_V2(DarkGreyModel):
