@@ -2679,6 +2679,185 @@ class TiTmCn2R2C_summer_V9_1(DarkGreyModel):
              'Q_solar_west': Q_solar_west, 'Q_solar_north': Q_solar_north}
         )
 
+
+class TiTmCn2R2C_full_V9_2(DarkGreyModel):
+    """
+    Full-year model for R05_07 with:
+      - Two solar facades (West + North), each with its own B-spline aperture
+      - Two ε-NTU radiators (N and V), each with its own MVV signal, sharing Tfor
+      - Dual-sensor room (averaged Ti, summed qv, averaged CO2)
+
+    Equations
+    ---------
+    Ci * dTi/dt = (Tm-Ti)/Rim + (Ta-Ti)/Rout
+                  + Q_vent + Q_int
+                  + f_sol * (Q_solar_west + Q_solar_north)
+                  + Q_heat_N + Q_heat_V
+
+    Cm * dTm/dt = (Ti-Tm)/Rim
+                  + (1 - f_sol) * (Q_solar_west + Q_solar_north)
+
+    Q_heat_N = ε_N * C_water_N * max(0, Tfor - Ti)
+    Q_heat_V = ε_V * C_water_V * max(0, Tfor - Ti)
+    """
+
+    def model(self, params, X):
+        num_rec = len(X['Ta'])
+
+        Ti = np.zeros(num_rec)
+        Tm = np.zeros(num_rec)
+        c  = np.zeros(num_rec)
+        N  = np.zeros(num_rec)
+
+        Q_int         = np.zeros(num_rec)
+        Q_vent        = np.zeros(num_rec)
+        Q_solar_west  = np.zeros(num_rec)
+        Q_solar_north = np.zeros(num_rec)
+        Q_heat        = np.zeros(num_rec)  # total: N + V
+
+        Ti[0] = params['Ti0']
+        Tm[0] = params['Tm0']
+        c[0]  = params['c0']
+        N[0]  = params['N0']
+
+        # ── Thermal & room parameters ─────────────────────────────────────
+        Ci            = params['Ci'].value
+        Cm            = params['Cm'].value
+        Rim           = params['Rim'].value
+        Rout          = params['Rout'].value
+        q_pers        = params['q_pers'].value
+        q_equip_var   = params['q_equip_var'].value
+        q_equip_const = params['q_equip_const'].value
+        V             = params['V'].value
+        S             = params['S'].value
+        G             = params['G'].value
+        c_out         = params['c_out'].value
+        rho_air       = params['rho_air'].value
+        cp_air        = params['cp_air'].value
+        alpha         = params['alpha'].value
+        n             = params['n'].value
+        K             = params['K'].value
+        L             = params['L'].value
+        f_sol         = params['f_sol'].value
+
+        # ── Solar facade parameters ───────────────────────────────────────
+        A_west        = params['A_west'].value
+        A_north       = params['A_north'].value
+        gamma_g_west  = params['gamma_g_west'].value
+        gamma_g_north = params['gamma_g_north'].value
+
+        # ── B-spline coefficients ─────────────────────────────────────────
+        phi_west_names  = ['phi_a',   'phi_b',   'phi_c',   'phi_d',   'phi_e',
+                           'phi_f',   'phi_g',   'phi_h',   'phi_i',   'phi_j']
+        phi_north_names = ['phi_a_n', 'phi_b_n', 'phi_c_n', 'phi_d_n', 'phi_e_n',
+                           'phi_f_n', 'phi_g_n', 'phi_h_n', 'phi_i_n', 'phi_j_n']
+
+        phi_west  = np.array([params[name].value for name in phi_west_names])
+        phi_north = np.array([params[name].value for name in phi_north_names])
+        n_bsplines = len(phi_west)
+        bsplines = np.column_stack([X[f'bs_{i}'] for i in range(n_bsplines)])
+
+        # ── ε-NTU radiator parameters (shared for both N and V units) ─────
+        UA         = params['UA'].value          # W/K  (per radiator unit)
+        Q_flow_max = params['Q_flow_max'].value  # l/h  (per radiator unit)
+        R_valve    = params['R_valve'].value     # rangeability (-)
+        cp_water   = params['cp_water'].value    # 4186 J/(kg·K)
+        rho_water  = params['rho_water'].value   # 1000 kg/m³
+
+        # ── Inputs ────────────────────────────────────────────────────────
+        Ta      = X['Ta']
+        Tsup    = X['Tsup']
+        qv      = X['qv']
+        Ik      = X['Ik']
+        c_meas  = X['c']
+        theta_z = X['theta_z']
+        gamma_s = X['gamma_s']
+        Tfor    = X['Tfor']                        # shared supply temp (°C)
+        MVV_N   = np.array(X['MVV_N']) / 100.0     # North radiator valve (0–1)
+        MVV_V   = np.array(X['MVV_V']) / 100.0     # Ventilation-side valve (0–1)
+
+        dt = self.rec_duration
+
+        # ── Pre-compute AOI & IAM for both facades ────────────────────────
+        theta_z_array = 90 - np.array(theta_z)
+        gamma_s_array = np.array(gamma_s)
+
+        aoi_west_all  = pvlib.irradiance.aoi(90, gamma_g_west,
+                                              theta_z_array, gamma_s_array)
+        aoi_north_all = pvlib.irradiance.aoi(90, gamma_g_north,
+                                              theta_z_array, gamma_s_array)
+
+        iam_west_all  = pvlib.iam.physical(aoi_west_all,  n=n, K=K, L=L)
+        iam_north_all = pvlib.iam.physical(aoi_north_all, n=n, K=K, L=L)
+
+        g_t_west  = bsplines @ phi_west
+        g_t_north = bsplines @ phi_north
+
+        # ── Helper: ε-NTU heat for one radiator ──────────────────────────
+        def q_rad(mvv_frac, tfor_val, ti_val):
+            """Returns Q_heat (W) for one radiator given valve fraction."""
+            if mvv_frac > 0.05:
+                Q_flow = Q_flow_max * (R_valve ** (mvv_frac - 1))  # l/h
+                m_dot  = rho_water * (Q_flow / 3600)               # kg/s
+            else:
+                m_dot = 0.0
+            m_dot_safe = max(m_dot, 1e-6)
+            C_w        = m_dot_safe * cp_water
+            epsilon    = 1.0 - np.exp(-UA / C_w)
+            return epsilon * C_w * max(0.0, tfor_val - ti_val)
+
+        # ── Main simulation loop ──────────────────────────────────────────
+        for k in range(1, num_rec):
+
+            Q_vent[k] = rho_air * cp_air * (qv[k-1] / 3600) * (Tsup[k-1] - Ti[k-1])
+            Q_int[k]  = (q_pers + q_equip_var) * N[k-1] + q_equip_const * S
+
+            Q_solar_west[k]  = g_t_west[k-1]  * iam_west_all[k-1]  * A_west  * Ik[k-1]
+            Q_solar_north[k] = g_t_north[k-1] * iam_north_all[k-1] * A_north * Ik[k-1]
+            Q_solar_total     = Q_solar_west[k] + Q_solar_north[k]
+
+            # Two independent radiators → sum their heat outputs
+            Q_heat_N_k = q_rad(MVV_N[k-1], Tfor[k-1], Ti[k-1])
+            Q_heat_V_k = q_rad(MVV_V[k-1], Tfor[k-1], Ti[k-1])
+            Q_heat[k]  = Q_heat_N_k + Q_heat_V_k
+
+            dTi = (
+                (Tm[k-1] - Ti[k-1]) / (Rim  * Ci)
+              + (Ta[k-1] - Ti[k-1]) / (Rout * Ci)
+              + (Q_vent[k] + Q_int[k]
+                 + f_sol * Q_solar_total
+                 + Q_heat[k]) / Ci
+            ) * dt
+
+            dTm = (
+                (Ti[k-1] - Tm[k-1]) / (Rim * Cm)
+              + (1.0 - f_sol) * Q_solar_total / Cm
+            ) * dt
+
+            Ti[k] = Ti[k-1] + dTi
+            Tm[k] = Tm[k-1] + dTm
+
+            N_from_CO2 = (qv[k] / (G * 1e6)) * (c_meas[k] - c_out)
+            dN   = (alpha / dt) * (N_from_CO2 - N[k-1]) * dt
+            N[k] = max(0, N[k-1] + dN)
+
+            dc   = (1e6 * (G / V) * N[k] - qv[k] / V * (c[k-1] - c_out)) * dt
+            c[k] = c[k-1] + dc
+
+        Q_solar_west[0]  = Q_solar_west[1]
+        Q_solar_north[0] = Q_solar_north[1]
+        Q_int[0]  = Q_int[1]
+        Q_vent[0] = Q_vent[1]
+        Q_heat[0] = Q_heat[1]
+
+        return DarkGreyModelResult(
+            Ti, X, params,
+            {'Ti': Ti, 'Tm': Tm, 'c': c, 'N': N,
+             'Q_int': Q_int, 'Q_vent': Q_vent,
+             'Q_solar_west': Q_solar_west, 'Q_solar_north': Q_solar_north,
+             'Q_heat': Q_heat}
+        )
+
 class TiTmCn2R2C_summer_V10(DarkGreyModel):
     """
     Grey-box model of one room with:
