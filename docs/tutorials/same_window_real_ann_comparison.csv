@@ -1,0 +1,6 @@
+System,Discomfort_degC_h,Cost_DKK,Comfort_pct_22_24,Policy,Delta_dh_vs_BAU,Delta_cost_vs_BAU
+BAU / Reference,147.41951741134073,4.297344095248781,59.285714285714285,Actual/reference operation from X_train on the selected window.,0.0,0.0
+No night vent,166.8584146564978,3.8849651009323365,52.85714285714286,Reference case with qv forced to 0 during night hours.,19.43889724515708,-0.41237899431644465
+ANN Knee (simulated),137.186283645356,4.300293747651555,60.0,"Fixed ANN knee setpoints simulated on this exact window: start=20.0h, stop=8.0h, qv=165 m³/h.",-10.233233765984721,0.0029496524027736726
+Rolling MPC (knee),132.64529633784272,5.292442740250042,60.71428571428571,"Representative rolling-MPC week policy: start=20.0h, stop=5.6h, qv=270 m³/h.",-14.774221073498012,0.9950986450012609
+DMI-MPC (knee),121.02375813652829,4.720995811988256,22.142857142857142,Time-varying daily policy from DMI forecast; no single fixed setpoint.,-26.39575927481245,0.42365171673947444

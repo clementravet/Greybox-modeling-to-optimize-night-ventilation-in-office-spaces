@@ -1,0 +1,5 @@
+System,Discomfort_degC_h,Delta_dh_vs_baseline,Cost_DKK,Delta_cost_vs_baseline,Comfort_pct_22_24,Policy_summary
+Baseline,166.8584146564978,0.0,3.8849651009323365,0.0,52.85714285714286,Night qv forced to 0.0. No optimized setpoints.
+Rolling MPC (Sys 2),105.52670512638382,-61.331709530114,6.937268388254985,3.0523032873226486,62.5,"Weekly fixed setpoints applied over the selected window: start=20.0h, stop=5.6h, qv=270 m³/h. For System 2, setpoints are constant within a given MPC week, but may change from one week to another."
+DMI-MPC (Sys 3),121.02375813652829,-45.83465651996953,4.720995811988256,0.8360307110559191,22.142857142857142,"Time-varying schedule. Setpoints are not a single (start, stop, qv) tuple over the whole window. System 3 optimizes qv step-by-step each day from the 48h DMI forecast, so the reported policy is summarized by daily qv ranges below."
+ANN Knee (scaled),127.46999999999998,-39.38841465649783,5.203333333333333,1.3183682324009967,40.9,"Reference only, scaled from monthly result by factor 0.233. Nominal static setpoints: start=20.0h, stop=8.0h, qv=165 m³/h."
