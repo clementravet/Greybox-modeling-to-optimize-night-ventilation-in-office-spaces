@@ -1,6 +1,4 @@
-# darkgreybox
-
-**Grey-box modeling of office spaces to optimize nighttime ventilation for summer cooling**
+# Grey-box modeling of office spaces to optimize nighttime ventilation for summer cooling
 
 This repository contains the code developed for the Master's thesis:
 > *Grey-box modeling of office spaces to optimize nighttime ventilation for summer cooling*
@@ -27,6 +25,7 @@ thermal behavior and evaluate nighttime ventilation strategies for passive summe
 ---
 
 ## Repository Structure
+'''
 darkgreybox/
 ├── darkgreybox/
 │ └── models/ # Grey-box model definitions
@@ -38,6 +37,7 @@ darkgreybox/
 │ ├── model_R05.07_mcmc/ # Implementing same model on different periods from April to October 2025 on the room R05.07
 │ └── night_ventilation/ # Night ventilation strategy evaluation
 └── requirements.txt
+'''
 
 Files "mcmc" are estimating parameters with mcmc method for each month while the "full" files are using the parameters estimated on the full period (from April to October) and then simulated on each separate month.
 
