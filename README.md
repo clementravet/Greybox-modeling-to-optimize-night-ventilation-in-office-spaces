@@ -1,114 +1,119 @@
-# Dark Grey Box
+# darkgreybox
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![CircleCI](https://circleci.com/gh/czagoni/darkgreybox.svg?style=shield)](https://circleci.com/gh/czagoni/darkgreybox)
-[![PyPI version](https://badge.fury.io/py/darkgreybox.svg)](https://badge.fury.io/py/darkgreybox)
+**Grey-box modeling of office spaces to optimize nighttime ventilation for summer cooling**
 
-## DarkGreyBox: An open-source data-driven python building thermal model inspired by Genetic Algorithms and Machine Learning
+This repository contains the code developed for the Master's thesis:
+> *Grey-box modeling of office spaces to optimize nighttime ventilation for summer cooling*
+> **Clément Ravet** — supervised by Christian Anker Hviid, DTU Construct, DTU, Spring 2026
 
-### Read the medium article here: https://medium.com/analytics-vidhya/data-driven-thermal-models-for-buildings-15385f744fc5
+You can refer to the thesis report for full context, methodology, and results.
 
-Constructing simple, accurate and easy-to-interpret thermal models for existing buildings is essential in reducing the environmental impact of our built environment. DarkGreyBox provides a data-driven approach to constructing and fitting RC-equivalent grey box thermal models for buildings, within the classic Machine Learning (ML) framework for straightforward model performance evaluation. 
+---
 
-A large number of competing models can be set up in easy-to-configure pipelines and the best performing models are selected based on principles inspired by Genetic Algorithms (GA). This approach also addresses the main disadvanatages of classical grey-box thermal modelling techniques by not requiring initial condition values for the thermal parameters to be pre-calculated and also not requiring an excitation signal to be injected into the building for successful model convergence and evaluation.
- 
-The massive advantages of using a DarkGreyBoxModel over a black-box (i.e. Machine Learning) model - e.g. a deep sequence-to-sequence model - are that it is easily interpreted by humans and that it slots easily into other modelling frameworks. E.g. to model the behaviour of a building with its connected heating system, simply construct a heat source model in a MILP framework and the grey-box building thermal model just slots in as a set of linear differential equations with a handful of parameters. Doing this with a deep ML model would be quite tricky. 
+## Overview
 
-The easiest way to get familiar with DarkGreyBox is to look at the [tutorials](docs/tutorials/).
+`darkgreybox` implements grey-box thermal models of office spaces, combining physical 
+structure with data-driven parameter estimation. The models are used to benchmark 
+thermal behavior and evaluate nighttime ventilation strategies for passive summer cooling.
+
+### Core Workflow
+
+1. **Model definition** — Grey-box RC thermal models of varying complexity
+2. **Parameter estimation** — Calibration against measured office data
+3. **Simulation** — Forward simulation using calibrated models
+4. **Benchmarking** — Comparison of model performance across configurations
+5. **Night ventilation strategies** — Evaluation of control strategies for summer cooling
+
+---
+
+## Repository Structure
+darkgreybox/
+├── darkgreybox/
+│ └── models/ # Grey-box model definitions
+├── data/ # Input data required for simulation and calibration
+├── simulation/ # Scripts reproducing all thesis results
+│ ├── model_summer/ # All the different summer models simulated on the same period
+│ ├── model_winter/ # All the different winter models simulated on the same period
+│ ├── model_R01.06_mcmc/ # Implementing same model on different periods from April to October 2025 on the room R01.06
+│ ├── model_R05.07_mcmc/ # Implementing same model on different periods from April to October 2025 on the room R05.07
+│ └── night_ventilation/ # Night ventilation strategy evaluation
+└── requirements.txt
+
+Files "mcmc" are estimating parameters with mcmc method for each month while the "full" files are using the parameters estimated on the full period (from April to October) and then simulated on each separate month.
+
+
+---
 
 ## Installation
 
-### Dependencies
-
-DarkGreyBox requires:
-
-- Python (>= 3.6)
-- lmfit 
-- pandas 
-- joblib 
-
-Note: these are only the core dependencies and you will most likely want to install either the optional dependencies or your preferred custom alternatives to them.
-
-### User installation from PyPi package (latest release)
-
-Install DarkGreyBox via `pip`:
 ```bash
-pip install darkgreybox
+pip install -r requirements.txt
 ```
 
-#### Optional Dependencies
+**Supported Python versions:** 3.9, 3.10, 3.11, 3.12
 
-This gives you a headstart for using DarkGreyBox in anger.
+---
 
-- scikit-learn 
-- numdifftools 
-- statsmodels 
-- matplotlib 
-- jupyter 
-- notebook 
+## Usage
 
-You can install these additional dependencies via pip:
-```bash
-pip install darkgreybox[dev]
+A typical workflow starts by importing the models, loading the data, running 
+calibration, and then simulating:
+
+```python
+from darkgreybox.models import YourModel
+import pandas as pd
+
+# Load input data
+data = pd.read_csv("data/office_data.csv", index_col=0, parse_dates=True)
+
+# Instantiate and fit model
+model = YourModel()
+model.fit(data)
+
+# Run simulation
+results = model.predict(data)
 ```
 
-### User installation from source repository
+To reproduce the full thesis results, run the scripts in the `simulation/` folder 
+in order. Each script is self-contained and documented with comments explaining 
+each step.
 
-You can check the latest sources with the command::
-```bash
-git clone https://github.com/czagoni/darkgreybox.git
+---
+
+## Data
+
+The `data/` folder contains the measured office environment data (temperature, 
+CO₂, ventilation flow rates, outdoor conditions) used for model calibration and 
+simulation. See the thesis report for a full description of the measurement setup 
+and data processing pipeline.
+
+---
+
+## Thesis Reference
+
+Ravet, C. (2026). *Grey-box modeling of office spaces to optimize nighttime 
+ventilation for summer cooling*. Master's Thesis, DTU Construct, Technical 
+University of Denmark. Supervisor: Christian Anker Hviid.
+
+---
+
+## Cite as
+
+```bibtex
+@mastersthesis{Ravet2026greybox,
+  author  = {Clément Ravet},
+  title   = {Grey-box modeling of office spaces to optimize nighttime 
+             ventilation for summer cooling},
+  school  = {Technical University of Denmark, DTU Construct},
+  year    = {2026},
+  month   = {June},
+  note    = {Supervisor: Christian Anker Hviid}
+}
 ```
 
-You can install the dev dependencies (from the root of the repository):
-```bash
-pip install -e .'[dev]'
-```
+---
 
-## Documentation
+## License
 
-To access the tutorials you need to have cloned DarkGreyBox from the source repository (see above).
-
-### Tutorials
-
-The easiest way to get into the details of how DarkGreyBox works is through following the tutorials:
-
-* [Demo Notebook 01 - Ti Model Direct Fit](docs/tutorials/darkgrey_poc_demo_01.ipynb): This notebook demonstrates the direct usage of the DarkGreyBox models via a simple fitting example for a Ti model.
-* [Demo Notebook 02 - TiTe Model Direct Fit FAIL](docs/tutorials/darkgrey_poc_demo_02.ipynb): This notebook demonstrates the direct usage of the DarkGreyBox models via a simple fitting example for a TiTe model. In this case a local minimum is found during the fitting process and the model heavily oscillates making it unusable.
-* [Demo Notebook 03 - TiTe Model Wrapper Fit PASS](docs/tutorials/darkgrey_poc_demo_03.ipynb): This notebook demonstrates the usage of the DarkGreyBox models via fitting them with a wrapper function for a TiTe model.
-* [Demo Notebook 04 - DarkGreyFit](docs/tutorials/darkgrey_poc_demo_04.ipynb): This notebook demonstrates the usage of the DarkGreyBox models via fitting them with DarkGreyFit, setting up and evaluating multiple pipelines at once.
-
-Launch a new jupyter notebook from the root of the repository:
-```bash
-jupyter notebook
-```
-
-## Development
-
-We welcome new contributors of all experience levels. 
-
-### Source code
-
-You can check the latest sources with the command::
-```bash
-git clone https://github.com/czagoni/darkgreybox.git
-```
-
-You can install the dev and test dependencies (from the root of the repository):
-```bash
-pip install -e .'[dev,test]'
-```
-
-### Testing
-
-After installation, you can launch the test suite from the repo root
-directory (you will need to have `pytest` installed):
-```bash
-pytest
-```
-
-You can check linting from the repo root directory (you will need to have `flake8` installed):
-```bash
-flake8
-```
-
-
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file 
+for details.
